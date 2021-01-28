@@ -1,0 +1,193 @@
+---
+title: 'Practice #5: Dimensionality Reduction'
+output:
+  html_document: default
+  html_notebook: default
+---
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(4321)
+
+packages = c("caret", "corrplot", "MASS", "ROCR")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+# Introduction
+
+For this practice we are goint to use the Breast Cancer Wisconsin data set from the [*UCI Machine learning repo*](http://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+%28Diagnostic%29) and try to detect whether a breast cancer cell is benign or malignant.
+
+The dataset includes  569 observations and 32 variables measuring the size and shape of cell nuclei. Features are computed from a digitized image of a fine needle aspirate (FNA) of a breast mass.  They describe characteristics of the cell nuclei present in the image.
+
+In more detail, the diagnosis, a categorical variable, is our response variable and the 30 measurement variables, all of which are continuous, are our potential explanatory variables for our model.
+These 30 measurement variables are actually only 10 different features of the nucleus, but with 3 different measurements of each: mean, standard error and the ‘worst’ or largest (mean of the three largest values).
+
+The features included are:
+
+* **radius** - mean of distances from center to points on the perimeter
+* **texture** - standard deviation of gray-scale values
+* **perimeter**
+* **area**
+* **smoothness** - local variation in radius lengths
+* **compactness** - perimeter^2 / area - 1.0
+* **concavity** - severity of concave portions of the contour
+* **concave points** - number of concave portions of the contour
+* **symmetry** 
+* **fractal dimension** - "coastline approximation" - 1
+
+# Data Loading
+
+We load the dataset from the CSV file
+
+```{r}
+dataset <- read.csv("data/data.csv")
+```
+
+
+Then, we collect all the 30 numeric variables into a matrix
+
+```{r}
+# Collecth the features
+dataset.features <- as.matrix(dataset[,c(3:32)])
+
+# Set the row names
+row.names(dataset.features) <- dataset$id
+
+# Create diagnosis vector
+diagnosis <- as.numeric(dataset$diagnosis == "M")
+
+table(dataset$diagnosis)
+
+```
+
+Well, the target variable is more or less equally distributed, so we do not need any further process in this regard.
+Let's move on to the Principal Component Analysis
+
+## Principal Components Analysis
+
+*Why PCA?*
+We will try to reduce the dimensionality of the dataset by applying PCA. There are thirty variables that can be combined using PCA into different linear combinations that each explain a part of the variance of the model.
+
+If we take a look to the correlation matrix, we can see that there are large correlations between some variables (i.e., we expected that behaviour since we have 3 different measures for the same phenomena). Since PCA relies in these correlations, it is reasonable to expect that it is going to be able to find a better representation of the data.
+```{r}
+
+
+corMatrix <- dataset[,c(3:32)]
+corrplot(cor(corMatrix), type = "upper")
+```
+
+
+Compute the Principal Compontents of the dataset (take a look to the `prcomp` function).
+```{r}
+# Your code here
+```
+
+Based on the previously computed Principal Compontents, bi-plot of the two principal components and how they relate to each feature.
+```{r warning=FALSE}
+cex.before <- par("cex")
+par(cex = 0.7)
+
+# Take a look to the biplot function
+
+```
+
+We can extract the eigen values from the `princomp()` function output. The square of the sdev’s gives us the eigen value of each component.
+Calculate these eigen values
+```{r}
+# Set up 1 x 2 plotting grid
+par(mfrow = c(1, 2))
+
+# Calculate variability of each component
+
+# pr.var <- Your Code here!
+
+```
+
+
+Variance explained by each principal component (Uncomment this line once you have computed the variability of each component). 
+```{r}
+# pve <- pr.var/sum(pr.var)
+```
+
+Plot variance explained for each principal component
+
+```{r}
+# Your code here
+```
+
+Plot cumulative proportion of variance explained (take a look to the `cumsum` function).
+```{r}
+# Your code here
+```
+
+### Principal Component Selection
+
+Based on the Cumulative Proportion of Variance Explained, decide how many principal components you want to select (i.e., you should choose a small number of PC that can explain most of the variance).
+
+From the princomp() function output object, extract the N-principal components (being N the number of coeffiencents that you have decided). 
+We are interested in the `rotation` (also called loadings) of the first six principal components multiplied by the scaled data, which are called `scores` (basically PC transformed data)
+```{r}
+# Your code here
+```
+
+## Linear Discriminant Analysis (LDA)
+
+From the principal component’s scatter plots it is evident that there is some clustering of benign and malignant points. This suggests that we could build a linear discriminant function using these principal components. 
+
+### Model building and validation
+
+Split the dataset into training/test data
+
+```{r}
+# Your code here
+```
+
+Calculate the `linear discriminant function` by using the `lda()` function of the `MASS` package. 
+
+```{r}
+
+# convert matrix to a dataframe
+
+# Perform LDA on diagnosis
+```
+
+Use this model to predict function’s newdata as the testing dataset.
+
+```{r}
+# convert matrix to a dataframe
+
+# Predict using the computed LDA model
+```
+
+### Model Evaluation using ROC and AUC
+
+Using `ROCR` library, create the ROC and compute the AUC
+```{r message=FALSE, warning=FALSE}
+
+
+# Evaluate the model
+
+
+```
+Compute the accuracy of the model
+```{r}
+# Your code here
+```
+
+### Model Comparison
+Compare the PCA-based model to a model including all the features.
+```{r}
+# Your code here
+```
+

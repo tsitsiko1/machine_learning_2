@@ -1,0 +1,367 @@
+---
+title: "Support Vector Machines"
+output:
+  html_document: default
+  html_notebook: default
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+packages = c("kernlab", "tm", "e1071", "SnowballC", "caret")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+# Introduction to SVM in R
+In this practice we are going to apply SVM to synthetic data to understand its operation and the impact of its parameters.
+The example has been taken from https://escience.rpi.edu/data/DA/svmbasic_notes.pdf
+
+## Data Generation
+
+We generate some data belonging to two classes linearly separables.
+```{r}
+n <- 1500          # number of data points
+p <- 2             # dimension
+sigma <- 1         # variance of the distribution
+meanpos <- 0       # centre of the distribution of positive examples
+meanneg <- 3       # centre of the distribution of negative examples
+npos <- round(n/2) # number of positive examples
+nneg <- n-npos     # number of negative examples
+
+# Generate the positive and negative examples
+Xpositive <- matrix(rnorm(npos*p,mean=meanpos,sd=sigma), npos, p)
+Xnegative <- matrix(rnorm(nneg*p,mean=meanneg,sd=sigma), npos, p)
+x <- rbind(Xpositive,Xnegative)
+
+# Generate the labels
+y <- matrix(c(rep(1,npos), rep(-1,nneg)))
+
+```
+
+## Data Visualization
+
+Let's visualize the data
+```{r}
+# Visualize the data
+plot(scale(x),col=ifelse(y>0,1,2))
+legend("topleft", c('Positive','Negative'), col=seq(2), pch=1, text.col=seq(2), cex=0.8)
+```
+
+## Train Test Splitting
+
+For the later evaluation we split the dataset (80% for training and 20% for test)
+```{r}
+## Prepare a training and a test set ##
+ntrain <- round(n*0.8)     # number of training examples
+tindex <- sample(n,ntrain) # indices of training samples
+xtrain <- x[tindex,]
+xtest <- x[-tindex,]
+ytrain <- y[tindex]
+ytest <- y[-tindex]
+istrain = rep(0, n)
+istrain[tindex] = 1
+# Visualize
+plot(scale(x),col=ifelse(y>0,1,2),pch=ifelse(istrain==1,1,2), xlab="X1", ylab="X2")
+legend("topleft",c('Positive Train','Positive Test','Negative Train','Negative Test'),
+       col=c(1,1,2,2),pch=c(1,2,1,2),text.col=c(1,1,2,2))
+```
+
+## SVM
+We will make use of the `ksvm` function in the `kernlab` package to train a SVM classifier on the generated data. 
+
+There are two important parameters:  C that controls the penalty of wrongly categorize datapoints depending on their distance from the separating hyperplane.
+As we explained in class, selecting a proper C vaule is crucial to the generalizability of the SVM. In this example code, it´s set to 1.
+
+The other parameter is the kernel applied. For this example, we use a linear kernel (called "vanilladot").
+
+```{r message = FALSE, warning=FALSE}
+#
+# Plot the decision boundary
+#
+set.seed(101)
+Cvalue <- 1    
+x <- rbind(matrix(rnorm(120),,2), matrix(rnorm(120,mean=3),,2))
+y <- matrix(c(rep(1,60),rep(-1,60)))
+svp <- ksvm(x,y,type="C-svc", C=Cvalue, kernel = "vanilladot")
+plot(svp,data=x)
+#
+## Explanation for plotting decision boundary can be found at:
+##   http://www.di.fc.ul.pt/~jpn/r/svm/svm.html
+#
+```
+
+```{r}
+# Predict labels on test
+ypred = predict(svp,xtest)
+
+print("Confusion Matrix:")
+table(ytest,ypred)
+
+# Compute accuracy
+print("Accuracy:")
+sum(ypred==ytest)/length(ytest)
+
+```
+
+# Exercise 1: RBF Kernel
+
+Based on the previous code, test a non-linear kernel and plot the decision boundary.
+
+¿How does it affect to the classification boundary?
+```{r}
+set.seed(101)
+Cvalue <- 100         
+x <- rbind(matrix(rnorm(120),,2), matrix(rnorm(120,mean=3),,2))
+y <- matrix(c(rep(1,60),rep(-1,60)))
+svp <- ksvm(x,y,type="C-svc", C=Cvalue, kernel="rbfdot")
+plot(svp,data=x)
+
+```
+
+As seen in the figure, the RBF kernel introduces non-linearities in the classification boundary. It allows the boundary to fit better the data, thus improving the performance of the classifier.
+
+```{r}
+# Predict labels on test
+ypred = predict(svp,xtest)
+
+print("Confusion Matrix:")
+table(ytest,ypred)
+
+# Compute accuracy
+print("Accuracy:")
+sum(ypred==ytest)/length(ytest)
+
+```
+
+# Exercise #2: Regularization
+
+Play with different values of `C` and explain how they affect to the decision boundary.
+
+```{r}
+
+set.seed(101)
+Cvalue <- 0.01       
+x <- rbind(matrix(rnorm(120),,2), matrix(rnorm(120,mean=3),,2))
+y <- matrix(c(rep(1,60),rep(-1,60)))
+svp <- ksvm(x,y,type="C-svc", C=Cvalue, kernel="rbfdot")
+plot(svp,data=x)
+```
+
+A smaller C value will cause the optimizer to create a larger-margin separating hyperplane, even if that hyperplane misclassifies more points.
+
+
+```{r}
+
+set.seed(101)
+Cvalue <- 1000       
+x <- rbind(matrix(rnorm(120),,2), matrix(rnorm(120,mean=3),,2))
+y <- matrix(c(rep(1,60),rep(-1,60)))
+svp <- ksvm(x,y,type="C-svc", C=Cvalue, kernel="rbfdot")
+plot(svp,data=x)
+```
+
+A larger C value creates a smaller-margin separating hyperplane. It will create a more strict boundary which might cause the classifier to overfit the tratining data.
+
+
+# Exercise #3: Polynomial Kernel
+
+We have played with linearly separable data. Let's see now how SVM behaves for non-linearly separable data. To that end we load the "spiral data", where each color belongs to one class.
+```{r}
+train <- read.csv("datasets/train.csv")
+test <- read.csv("datasets/test.csv")
+
+# color list for each of the classes. The example has three classes but one extra is needed as required by filled.contour
+clist      <- rainbow(4, s = 1,   v = 1, start = 0.2, 1, alpha = 1)
+clistdesat <- rainbow(4, s = 0.5, v = 1, start = 0.2, 1, alpha = 1)
+
+for (c in 1:3) {
+	train$color[train$Label==c-1] <- clist[c];
+	train$colordesat[train$Label==c-1] <- clistdesat[c];
+}
+
+# plot train data
+plot(train$X, train$Y, bg=train$color , pch=21,  main="Spiral Train", xlab="X", ylab="Y");
+
+#  transform Label column to factor so svm treats it as a categorical classification
+train$Label <- factor(train$Label, levels=c("0", "1", "2"), ordered=T)
+test.label <- factor(train$Label, levels=c("0", "1", "2"), ordered=T)
+
+```
+
+For this Exercise we will use the `e1071` library.
+The following function train a SVM model with a polynomial kernel and plot the classification boundary
+
+```{r}
+
+# load svm library 
+
+svm_model <- function(title="SVM", kernel='polynomial', degree=3) {
+	model <- svm(Label ~ X + Y, data = train, kernel=kernel, degree=degree);
+	print(model);
+	summary(model);
+	plot_title = paste(title,'kernel',kernel,'degree', toString(degree));
+
+# predict and adjust offset so Labels return to the original set of {0, 1, 2}
+	pred <- as.numeric(predict(model, test)) - 1;
+
+# reshape prediction vector to a matrix to produce decision boundaries and areas
+	z <- matrix(pred, nrow = sqrt(nrow(test)), byrow=F)
+# Make a contour plot for the decision boundaries. Also called "level plot"
+		filled.contour(x = seq(-1, 1, length.out = nrow(z)),
+				y = seq(-1, 1, length.out = ncol(z)),
+				z, levels = seq(-0.5, 3 , 1), col = clistdesat,
+				xlab="X", ylab="Y", main=plot_title, plot.axes = {points(train$X, train$Y, bg=train$color, pch=21); axis(1); axis(2) });
+}
+
+```
+
+
+If we set the degree of the polynomial kernel to 1, it behaves like a linear SVM (without any kernel).
+```{r}
+svm_model(degree=1)
+
+```
+
+As you can see, the Linear Kernel is not able to classify the non-linearities in the data.
+
+
+
+Try different degrees for the polynomial kernel using the `svm_model` function. Which one would you select?
+```{r}
+for (d in (1:10)) {
+	svm_model(degree=d)
+}
+```
+
+
+As you can see in the results, degrees with odd values [3,5,7] perform better. Let's visualize what the polynomial projection is doing to understand this behaviour.
+
+
+```{r}
+degree = 2
+plot(train$X^degree, train$Y^degree, bg=train$color , pch=21,  main="Spiral Train", xlab="X", ylab="Y");
+```
+
+
+
+```{r}
+degree = 3
+plot(train$X^degree, train$Y^degree, bg=train$color , pch=21,  main="Spiral Train", xlab="X", ylab="Y");
+```
+
+# Exercise #4: Working Example - Text Classification
+
+We are going to apply SVM to a real scenario.
+Do you remember the polarity classification task that we addresed in the Naïve Bayes Practice? Let's see if the fancier SVM model can outperform our first naïve approach.
+
+To facilitate you the exercise, the following code prepare the the movie-pang dataset (use the same `movie-pang02.csv` provided for the Naïve Bayes practice) for the application of SVM (use the `trainin_data` and `test_data` objects).
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+dataset <- read.csv("datasets/movie-pang02.csv", stringsAsFactors = FALSE)
+
+# Randomize the dataset to facilitate the training process
+set.seed(123)
+dataset <- dataset[sample(nrow(dataset)), ]
+dataset <- dataset[sample(nrow(dataset)), ]
+
+# Convert the target variable ('class') from character to factor.
+dataset$class <- as.factor(dataset$class)
+
+corpus <- Corpus(VectorSource(dataset$text))
+
+
+cleanCorpus <- function(corpus) {
+  corpus <-tm_map(corpus, stemDocument)
+  corpus.tmp <- tm_map(corpus,removePunctuation)
+  corpus.tmp <- tm_map(corpus.tmp,stripWhitespace)
+  corpus.tmp <- tm_map(corpus.tmp,removeWords,stopwords("en"))
+  return(corpus.tmp)
+}
+
+corpus.clean <- cleanCorpus(corpus)
+
+dtm <- DocumentTermMatrix(corpus.clean,control = list(weighting= function(x) weightBin(x)))
+dtm <- removeSparseTerms(dtm, .99)
+
+dataset.train <- dataset[1:1500,]
+dataset.test <- dataset[1501:2000,]
+
+dtm.train <- dtm[1:1500,]
+dtm.test <- dtm[1501:2000,]
+
+corpus.clean.train <- corpus.clean[1:1500]
+corpus.clean.test <- corpus.clean[1501:2000]
+
+X <- as.matrix(dtm.train)
+y <- dataset.train$class
+
+training_data <- as.data.frame(cbind(y,X))
+test_data <- as.data.frame(as.matrix(dtm.test))
+```
+
+Use the functions in `e1071` package to create an SVM model for the training data
+```{r}
+sv <- svm(y~., training_data, type="C-classification", kernel="sigmoid", cost=1)
+```
+
+Evaluate the SVM model in terms of Accuracy
+¿Have we improved the Naive Bayes model?
+
+Predict and compute the confusion matrix
+```{r}
+prediction <- predict(sv, test_data)
+table("Predictions"= prediction,  "Actual" = dataset.test$class )
+
+```
+
+Calculate the accuracy from the confusion matrix
+```{r}
+acc <- function(table){
+  TP = table[1,1];  # true positives
+  TN = table[2,2];  # true negatives
+  FP = table[1,2];  # false positives
+  FN = table[2,1];  # false negatives
+  acc = (TP + TN)/(TP + TN + FP + FN)
+  return(acc)
+}
+acc(table("Predictions"= prediction,  "Actual" = dataset.test$class ))
+```
+As expected, our SVM model is significantly better than the more basic NB model.
+
+
+Let's try to tune SVM parameters to further improve the model performance
+```{r}
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           verboseIter = TRUE)
+
+grid <- expand.grid(C = c(0.01, 0.1,1, 10), sigma=c(0.5))
+ 
+cv.svm <- train(X,y,
+                preProc = c("center", "scale"),
+                method='svmRadial',
+                tuneLength = 5,
+                tuneGrid = grid,
+                metric = "Accuracy",
+                trControl = fitControl)
+
+```
+
+```{r}
+cv.svm.prediction <- predict(cv.svm, test_data)
+table("Predictions"= cv.svm.prediction,  "Actual" = dataset.test$class )
+```
+```{r}
+acc(table("Predictions"= cv.svm.prediction,  "Actual" = dataset.test$class ))
+```
+

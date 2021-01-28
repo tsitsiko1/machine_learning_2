@@ -1,0 +1,267 @@
+---
+title: "Model Evaluation and Selection"
+output:
+  html_document: default
+  pdf_document: default
+  html_notebook: default
+---
+
+
+This document is the guideline to the PRACTICE #2. The goals of this practice are:
+
+  1. Test different evaluation methods over probabilistic and classification models.
+  2. Experiment with model selection, namely by applying cross-validation, as main technique.
+  
+We'll use the Titanic dataset, that has been polished and simplified for you. You can download the dataset from Kaggle: https://www.kaggle.com/c/titanic.
+
+This one has been widely used in many competitions, so it will easy to find solutions if you get stuck with it. Good luck!
+
+```{r}
+packages = c("pROC","caret", "ROCR")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+library(pROC)            # This library makes handling ROC curves a lot easier.
+library(caret)
+library(ROCR)
+numIterations <- 1000
+```
+
+## 1 Data Load
+
+Our sample dataset: passengers of the RMS Titanic. We will use an open data set with data on the passengers aboard the infamous doomed sea voyage of 1912. We will experiment with logistic regression to predict whether a given passenger would have survived this disaster. The file containing the dataset is `titanic.csv` and should be read using the simple command: 
+
+```{r}
+
+readData <- function() {
+  df <- read.csv('data/titanic.csv', sep=';', dec = ",", header=T)
+  df <- df[complete.cases(df),]
+  df$pclass <- as.factor(df$pclass)
+  df$survived <- as.factor(df$survived)
+  df$sex <- as.factor(df$sex)
+  df$embarked <- as.factor(df$embarked)
+  df$sex <- droplevels(df$sex)           # There is a level "" that shouldn't be there.
+  df$embarked <- droplevels(df$embarked) # There is a level "" that shouldn't be there.
+  # http://stackoverflow.com/questions/4605206/drop-data-frame-columns-by-name
+  df <- subset(df, select = -c(ticket,cabin) ) 
+  # I need to convert all factor features to numbers to produce the correlation matrix.
+  # First two functions, applied to each row, substitute the strings by numbers.
+  sexToNum <- function(x) ifelse((x %in% "male"), 1, 2)           
+  embToNum <- function(x) ifelse(x=="C", 1, ifelse(x=="Q", 2, 3)) 
+  df$pclass <- as.numeric(levels(df$pclass))[df$pclass]
+  df$sex <- sexToNum(df$sex)
+  df$embarked <- embToNum(df$embarked)
+  df$age <- as.numeric(df$age)
+  df$fare <- as.numeric(df$fare)
+  df <- df[c("survived","pclass","sex","age","sibsp","parch","fare","embarked")]
+  df
+}
+
+df <- readData()
+```
+
+Now split it. Use the function recommended in practice#1, slightly modified here.
+
+```{r}
+splitdf <- function(dataframe, seed=NULL, percentage=0.8) {
+  if (!is.null(seed)) set.seed(seed)
+  index <- 1:nrow(dataframe)
+  numTrainingSamples <- round(length(index) * percentage)
+  trainindex <- sample(index, numTrainingSamples)
+  trainset <- dataframe[trainindex, ]
+  testset <- dataframe[-trainindex, ]
+  list(trainset=trainset,testset=testset)
+}
+```
+
+Take 80% for training, 20% for testing.
+```{r}
+splits <- splitdf(df, seed=123, percentage = 0.8)
+trn = splits$trainset
+tst = splits$testset
+```
+
+The column heading variables have the following meanings:
+
+  * survival: Survival (0 = no; 1 = yes)
+  * class: Passenger class (1 = first; 2 = second; 3 = third)
+  * name: Name
+  * sex: Sex
+  * age: Age
+  * sibsp: Number of siblings/spouses aboard
+  * parch: Number of parents/children aboard
+  * ticket: Ticket number
+  * fare: Passenger fare
+  * cabin: Cabin
+  * embarked: Port of embarkation (C = Cherbourg; Q = Queenstown; S = Southampton)
+  
+Your first decission will be whether data needs to standardized or not, and what are the relevant features for this model. My only advice is not to use `cabin` nor `ticket`.
+
+## The Model
+
+Predict if passenger survived (`df$survived == 1`) or not (`df$survived == 0`). The simplest decission will be to use Logistic Regression. You must have already decided what are the relevant fields to use.
+
+The following code gives you an idea on how to run the logistic regression, compute the true positive rate, false positive rate and a cost function associated with false positives and false negatives. You can play with the cost function to penalize whatever is more important in your business case.
+
+```{r}
+# The logistic regression over most of the features, and the training data set.
+model <- glm(survived~pclass+sex+age+sibsp+fare+embarked+parch, data=trn, family = "binomial")
+# The predicted probabilities given to each sample in the test set.
+probs <- predict(model, type="response", newdata = tst)
+# The predictions in the form of a dataset to make manipulation easier. We put together here 'labels' and 'probabilities'.
+predictions <- data.frame(survived=tst$survived, pred=probs)
+```
+
+### The ROC curve
+
+A Function that returns the resulting confusion matrix from a given threshold
+```{r}
+confusionMatrix <- function(predictions, threshold) {
+  table(predictions$survived, factor((predictions$pred > threshold),levels=c("FALSE","TRUE")))
+}
+confusionMatrix(predictions, 0.5)
+```
+Function to calculate the True positive rate.
+```{r}
+tpr <- function(predictions, threshold) {
+  confMat <- confusionMatrix(predictions, threshold)
+  confMat["1", "TRUE"] / sum(confMat["1", ])  # True Positive Rate = TP/TP+FN
+}
+cat(paste("TPR: ",tpr(predictions, 0.5),"\n"))
+```
+Function to calculate the False positive rate.
+```{r}
+fpr <- function(predictions, threshold) {
+  confMat <- confusionMatrix(predictions, threshold)
+  confMat["0", "TRUE"] / sum(confMat["0", ])  # False Positive Rate = FP/FP+TN 
+}
+cat(paste("FPR: ",fpr(predictions, 0.5),"\n"))
+```
+Function to calculate the Cost for false positives and false negatives.
+```{r}
+cost <- function(predictions, threshold, fpCost=1, fnCost=2) {
+  confMat <- confusionMatrix(predictions, threshold)
+  (confMat["0", "TRUE"] * fpCost) + (confMat["1", "FALSE"] * fnCost)
+}
+cat(paste("Cost: ",cost(predictions, 0.5, 1, 2),"\n"))
+```
+
+#### Build the ROC data
+
+What we see as a result is the first raw conclusion without knowing if 0.5 is a good threshold. We will build our own ROC vlaues. Produce the ROC values for TPR, FPR and a cost associated with them, in a data frame.
+
+```{r}
+roc <- data.frame(threshold = (1:99)/100, tpr=NA, fpr=NA)
+roc$tpr <-  sapply(roc$threshold, function(th) tpr(predictions, th))
+roc$fpr <-  sapply(roc$threshold, function(th) fpr(predictions, th))
+roc$cost <- sapply(roc$threshold, function(th) cost(predictions, th))
+```
+
+
+Create a function to generate a continuous color palette, and plot the ROC curve and the cost function.
+```{r echo=TRUE}
+idx_threshold = which.min(abs(roc$cost))
+{
+  rbPal <- colorRampPalette(c('green','red'))
+  roc$col <- rbPal(10)[as.numeric(cut(roc$cost, breaks = 10))]
+  par(mfrow=c(1,2))
+  # This one is for the ROC (FPR vs. TPR)
+  plot(roc$fpr, roc$tpr, xlab="False Positive Rate", ylab="True Positive Rate",
+       type="b", cex=1.5, lwd=2, col=adjustcolor(roc$col, alpha=0.5), pch=16, xlim=c(0,1), ylim=c(0,1))
+  abline(0,1,lty=2, lwd=2)
+  abline(v=roc$fpr[idx_threshold], lty=2, lwd=1, col="grey"); 
+  abline(h=roc$tpr[idx_threshold], lty=2, lwd=1, col="grey")
+  # This one is for the cost.
+  plot(roc$threshold, roc$cost, xlab="Threshold", ylab="Cost", 
+       type="b", cex=1.5, lwd=2, pch=16,xlim=c(0,1), col=adjustcolor(roc$col, alpha=0.5))
+  abline(v=roc$threshold[idx_threshold], lty=2, lwd=2, col="grey")
+}
+```
+
+The results obtained are:
+
+```{r, echo=FALSE}
+cat(paste("Optimal Threshold: ", roc$threshold[idx_threshold],"\n"))
+cat(paste("TPR: ", roc$tpr[idx_threshold],"\n"))
+cat(paste("FPR: ", roc$fpr[idx_threshold],"\n"))
+```
+
+To compute the AUC for the ROC curves, we better use an R package like pROC:
+```{r, message=FALSE, warning=FALSE}
+library(pROC)
+auc(predictions$survived, predictions$pred)
+```
+
+In case you want to try with an external package, a good option is the ROCR package
+```{r, message=FALSE, warning=FALSE}
+library(ROCR)
+pred = prediction(predictions$pred, predictions$survived)
+perf <- performance(pred, "tpr", "fpr") 
+plot(perf, type="b", colorize=T)
+```
+
+To extract the optimal value, things become a bit more obscure:
+```{r}
+opt.cut = function(perf, pred){
+    cut.ind = mapply(FUN=function(x, y, p){
+        d = (x - 0)^2 + (y-1)^2
+        ind = which(d == min(d))
+        c(sensitivity = y[[ind]], specificity = 1-x[[ind]], 
+            cutoff = p[[ind]])
+    }, perf@x.values, perf@y.values, pred@cutoffs)
+}
+print(opt.cut(perf, pred))
+```
+
+Using the embedded cost function in the ROCR package we can also get the optimal values, but results are slightly different as the cost function used is different from the one we used.
+```{r}
+cost.perf <- performance(pred, "cost")
+cost.vals <- slot(performance(pred, "cost"), "y.values")[[1]]
+plot(cost.vals, type="b", cex=1.5, lwd=2, ylim=c(0,1),
+     pch=16,col=adjustcolor(roc$col, alpha=0.5), ylab="Cost")
+```
+
+What is the optimal value we get using the ROCR package?
+```{r }
+cat(paste("Optimal TPR: ", pred@cutoffs[[1]][which.min(cost.perf@y.values[[1]])]),"\n")
+```
+
+#### Double density plot
+
+```{r}
+library(ggplot2)
+ggplot(predictions, aes(x = pred, fill = survived)) + geom_density(alpha = 0.5, adjust = 0.5)
+
+```
+
+
+
+### Practice Goals
+
+Now you know how what features are relevant to your model, and how to measure your model's performance. But we can improve this a bit. Go through the steps below:
+
+  1. We have measured our model's performance against a single test-set. We're sure our model is the best possible model against that test-set, but we want to be sure, that is the best against any possible test set. To do that, please, measure how your model results change when using different test sets. To do that, simply start over the process at least 10 times with different splits of the full dataset into training and test. Result might differ, so illustrate that difference in performance.
+  2. Following with the approach of the previous step, let's go one step further, and apply cross-validation. This is, train your model against 60% of the data. Use another 20% cross-validation set to select the best possible threshold, and finally, measure the performance of that threshold selection against the remaining 20% test set (yet unseen to the model).
+  3. To put everything together, we need to apply the previous step to compare between models. As we're experimenting with only one possible model (logistic regression), let's compare different performance measures. We've focused so far in ROC curve and TPR vs. FPR, but we can select threshold based on Accuracy, Precission/Recall or even MCC or F1 score. Select one of them and compare your results with those obtained using the ROC curve.
+  
+Good luck!
+
+  
+  
+## Useful links:
+
+  - http://www.joyofdata.de/blog/illustrated-guide-to-roc-and-auc/
+  - https://hopstat.wordpress.com/2014/12/19/a-small-introduction-to-the-rocr-package/
+
+
+
+

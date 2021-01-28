@@ -1,0 +1,503 @@
+---
+title: "Featuring Engineering Practice"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+author: Machine Learning II
+---
+
+# Introduction
+In this first practical session we will make the first contact with the featuring engineering process and its impact in a ML pipeline.
+Feature engineering is one of the most important step of the process of developing prediction models. It is considered, by many authors, an art, and it involves human-driven design and intuition. This practice will try to uncover the most relevant issues that must be addressed, and also provide some guidelines to start building sound feature engineering processes for ML problems. 
+
+The experimental dataset we are going to use is the HR Analytics Dataset. It includes explanatory variables of around 15k employees of a large company. The goal of the case study is to
+model the probability of attrition (employees leaving, either on their own or because they got fired) of each employee, as well as to understand which variables are the most important ones and need to be addressed right away.
+
+The results obtained will be helpful for the management in order to understand what changes they should make to their workplace to get most of their employees to stay.
+
+For more details on the dataset and the task see: <https://www.kaggle.com/manojvijayan/feature-engineering-for-logistic-regression>.
+```{r Check for the installed packages and install those required}
+
+library('rJava')
+.jinit()
+.jcall("java/lang/System", "S", "getProperty", "java.runtime.version")
+
+packages = c("dplyr", "e1071","caret", "ggplot2", "glmnet", "rJava","FSelector")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+```
+
+
+```{r Load libraries, warning=FALSE, message=FALSE}
+
+
+## Importing packages
+library(e1071)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(glmnet)
+
+```
+
+Some useful functions.
+
+```{r}
+# Train-Test Spliting
+splitdf <- function(dataframe, seed=NULL) {
+  if (!is.null(seed)) set.seed(seed)
+ 	index <- 1:nrow(dataframe)
+ 	trainindex <- sample(index, trunc(length(index)/1.5))
+ 	trainset <- dataframe[trainindex, ]
+ 	testset <- dataframe[-trainindex, ]
+ 	list(trainset=trainset,testset=testset)
+}
+```
+
+# Data Loading and Preprocessing
+
+Let's load the dataset to make sense of the information we have about the employees.
+ 
+```{r Load CSV Files}
+# Note that you should modify the filepath according to where you have them
+initial_hr_df<-read.csv("data/turnover.csv")
+summary(initial_hr_df)
+
+# Keep the original dataset for later comparisons and make a copy for the FE process
+hr_df <- data.frame(initial_hr_df)
+```
+
+We have 10 columns: the target variable (`left`) and 9 more features to work with. Let's analyze a little bit more each of them to check if we need to clean or preprocess them.
+
+## Factorize features
+
+2 of the categories (`sales` and `salary`) are already categorical. In addition, if we analyze the rest of the features we will see that we have three more categorical values encoded as numeric: `Work_accident`, `promotion_last_5years` and the target variable itself (`left`). Therefore, we should convert them to categorical before any further processing.
+
+You can use the `factor` function for the conversion and the `labels` parameter in case you want to redefine the names of the levels.
+
+```{r Factorize features}
+
+hr_df$Work_accident <-factor(hr_df$Work_accident, levels = c("0", "1"), labels = c("No", "Yes"))
+hr_df$promotion_last_5years <-factor(hr_df$promotion_last_5years, levels = c("0", "1"), labels = c("No", "Yes"))
+hr_df$left <- factor(hr_df$left, levels = c("0", "1"), labels = c("No", "Yes"))
+
+```
+
+### Advanced Factorization
+
+The rest of the numerical values present a level of detail that may be much more fine-grained than we need. For instance, the satisfaction level can be represented by different categories (low, medium, high, ...). We will then create another "bucketized" feature for each of the numerical columns.
+
+To that end, I will make use of two functions:
+
+ - **recode:** This function change the old values in the column by new ones.  For more information on the `recode` function, please refer to: <https://www.rdocumentation.org/packages/memisc/versions/0.99.14.12/topics/recode>. I have applied this function to change discrete numerical values in `time_spend_company_cat` and `number_project_cat` to categories.
+
+ - **.bincode:** This function is a little bit trickier. It takes a numeric vector and a set of ranges and it "bucketizes" the vector according to the ranges. More information about this function: <https://www.rdocumentation.org/packages/base/versions/3.5.2/topics/.bincode>. I have used it to split the continuous numerical columns (`satisfaction_level`, `last_evaluation`, `average_montly_hours`) into levels. (Values taken from: https://www.kaggle.com/manojvijayan/feature-engineering-for-logistic-regression/notebook)
+
+```{r Bucketize some numerical features}
+hr_df$satisfaction_level_bin <-.bincode(hr_df$satisfaction_level, c(0, 0.11, 0.35, 0.46, 0.71, 0.92,1.0))
+hr_df$last_evaluation_bin <-.bincode(hr_df$last_evaluation, c(0, 0.47, 0.48, 0.65, 0.88, 0.89,1.0))
+hr_df$average_montly_hours_bin <-.bincode(hr_df$average_montly_hours, c(96, 131, 165, 178, 179, 259, 287, 320), TRUE, TRUE)
+
+hr_df$number_project_cat <-recode(hr_df$number_project,`2`="Low",`3`="Low",`4`="Medium",`5`="Medium",`6`="High", `7`= "Very_High")
+hr_df$time_spend_company_cat <- recode(hr_df$time_spend_company,`2`="Low",`3`="Medium",`4`="Medium",`5`="Medium",`6`="High", `7`= "High", `8`= "Very_High", `10`= "Very_High")
+```
+
+**Note: Some of you got an error in the stepwise methods related to the name of the features. This is due to I accidently included some whitespaces in the `number_project_cat` and `time_spend_company_cat` features; e.g., Very High. I have corrected this issue in the previous code chunk, so it should work now.**
+
+## Hunting NAs
+
+There is not any NULL values, so we can skip this step. You can see by summarizing the dataset or you can use the `is.na` function to identify the null values.
+
+```{r NA Imputation}
+# Missing values by column
+colSums(is.na(hr_df))
+```
+
+It is unlikely not to have any null values in the dataset (this is a reduced and rather clean dataset of the original one). In the case that you have null values, you should follow some of the imputation/removal strategies explained in class. Although `caret` (and some other libraries) provides ways to impute/remove the null values while training your model, I strongly recommend you to do it by yourself to control the process.
+
+## Outlier Analysis
+
+Another aspect that may affect the performance of our machine learning pipeline is the presence of outliers. We will focus on the numerical columns of the dataset to detect the presence of outliers and proceed to their removal.
+
+The easiest way to detect outliers is visualizing the numerical values; for instance, by `boxploting` the column values.
+
+For instance, if we plot the `time_spend_company` feature, we will see that there are some extreme cases of employees that have spent many years at the company. 
+
+```{r Outlier Detection}
+ggplot(hr_df, aes(x="",y=time_spend_company))+ geom_boxplot(width=0.1) + theme(axis.line.x=element_blank(),axis.title.x=element_blank(), axis.ticks.x=element_blank(), axis.text.x=element_blank(),legend.position="none")
+```
+
+We don't want these extreme cases to affect or bias the training process, so the best is to remove them.
+We can apply some metric (i.e., the Z-score) to detect and remove these points. The `boxplot` function itself provides a way to remove them:
+
+```{r Outlier Detection III}
+
+to_remove <- boxplot.stats(hr_df$time_spend_company)$out
+
+cat("Number of outliers", length(to_remove))
+
+hr_df <- hr_df[!hr_df$time_spend_company %in% to_remove, ]
+
+```
+
+Let's do the same for the rest of the columns.
+
+```{r Outlier Detection IV}
+for (col in names(hr_df)) {
+  if (is.numeric(hr_df[[col]]) && col != "left"){
+    print(ggplot(hr_df, aes_string(y=col))+ geom_boxplot(width=0.1) + theme(axis.line.x=element_blank(),axis.title.x=element_blank(), axis.ticks.x=element_blank(), axis.text.x=element_blank(),legend.position="none"))
+    to_remove <- boxplot.stats(hr_df[[col]])$out
+    hr_df <- hr_df[!hr_df[[col]] %in% to_remove, ]
+  }
+}
+```
+
+
+
+# Train-Test Splitting
+
+We are going to split the annotated dataset in training and test for the later evaluation of our ML models.
+
+```{r Train test split}
+# Original Dataset
+initial_splits <- splitdf(initial_hr_df, seed=1)
+initial_training <- initial_splits$trainset
+initial_test <- initial_splits$testset
+
+# Cleaned Dataset
+splits <- splitdf(hr_df, seed=1)
+training <- splits$trainset
+test <- splits$testset
+
+```
+
+
+# Feature Engineering
+
+We first fit a `glm` model to the initial dataset to have a baseline to evaluate the impact of the data cleaning and feature engineering.
+
+To facilitate the training process we will use the `caret` package: http://topepo.github.io/caret/index.html. `caret` provides a wrapper for the preprocessing, training and evaluation of many machine learning algorithms. In particular, we will use the two main `caret` functions:
+
+ - **train():** Takes the training data, the model to be applied, and the evaluation metric to optimize and returns an object with the trained model. You can either plot the model to analyze it for its further refinement or use it for prediction:
+ 
+ - **predict():** Takes the trained model and the test set to predict the values of the target variable 
+
+```{r Initial Regression model}
+# Factorize the target variable
+initial_training$left <- factor(initial_training$left, levels = c("0", "1"), labels = c("No", "Yes"))
+initial_test$left <- factor(initial_test$left, levels = c("0", "1"), labels = c("No", "Yes"))
+
+# Train
+initial.lm.mod <- train(left ~ ., # Formula: Target variable ~ predictors
+               data = initial_training, # Training data
+               method = "glm", # ML model
+               metric = "Accuracy" # Evaluation metric
+               )
+
+# Predict
+initial.lm.mod.pred <- predict(initial.lm.mod, initial_test[,-which(names(initial_test) == "left")])
+
+# Plot the confusion matrix
+cm_initial <- confusionMatrix(initial.lm.mod.pred, initial_test$left, positive = "Yes")
+print(cm_initial)
+
+# Plot the 20 most important features
+plot(varImp(initial.lm.mod), main = "20 most important features")
+
+```
+
+
+And now the results with the cleaned dataset.
+
+```{r Full Regression model}
+
+# Train
+full.lm.mod <- train(left ~ ., # Formula: Target variable ~ predictors
+               data = training, # Training data
+               method = "glm", # ML model
+               metric = "Accuracy" # Evaluation metric
+               )
+
+# Predict
+full.lm.mod.pred <- predict(full.lm.mod, test[,-which(names(test) == "left")])
+
+# Plot the confusion matrix
+cm <- confusionMatrix(full.lm.mod.pred, test$left, positive = "Yes")
+print(cm)
+
+# Plot the 20 most important features
+plot(varImp(full.lm.mod), main = "20 most important features")
+
+```
+
+The analysis of the confusion matrix points out some interesting aspects:
+
+ - Even though we were dealing with a rather clean dataset, already prepared for experimentation, cleaning the dataset offers a huge improvement in the performance of the model.
+  
+ - We have a global 90% of accuracy which seems a good results to be reported to the HR department.
+ 
+ - We are better at predicting the negative class (a employee is NOT going to leave the company) than the positive class (a employee is going to leave the company).
+ 
+ - We can find some of the features that we have previously created among the most important features.
+ 
+
+## Filtering Methods
+
+
+We will rank the features according to their predictive power by applying the methodologies seen in class: the Chi Squared Independence test and the Information Gain.
+
+Both Chi-squared and Information Gain are implemented by `FSelector` the package <https://cran.r-project.org/web/packages/FSelector/FSelector.pdf>. However, this package is well-known for having integration issues related to Java. If you are experiencing any problem **after having installed Java**, take a look to this link <https://askubuntu.com/a/725386> to set your `LD_LIBRARY_PATH` to the path where you have Java installed.
+
+Anyhow, if you have still problems with this package, do some research to find another packages (e.g., FSelectorRcpp).
+
+
+### Chi-squared Selection
+Making use of the `FSelector` package (or other you choice) rank the features according to the Chi Squared value. 
+
+Does it make sense to remove some features? If so, do it!
+
+
+```{r Chi-Squared}
+library(FSelector)
+
+weights<- data.frame(chi.squared(left~., training)) # Chi-squared computation
+weights$feature <- rownames(weights)
+weights[order(weights$attr_importance, decreasing = TRUE),] # Order the features by their weights
+chi_squared_features <- weights$feature[weights$attr_importance > 0.1] # Remove the features with importance lower than the threshold
+```
+
+#### Evaluation
+Evaluate the impact of the feature selection.
+
+To that end, execute the previous LM model taking as input the chi-squared-filtered training set.
+
+```{r Chi-Squared Regression, warning=FALSE}
+chi_squared.lm.mod <- train(left ~ ., data = training[append(chi_squared_features, "left")], 
+               method = "glm", 
+               metric = "Accuracy")
+
+
+chi_squared.lm.mod.pred <- predict(chi_squared.lm.mod, test[,-which(names(test) == "left")])
+
+cm <- confusionMatrix(chi_squared.lm.mod.pred, test$left, positive = "Yes")
+print(cm)
+```
+
+As shown by the confusion matrix, we have improved a little bit the performance of the model while reducing the number of features.
+
+### Information Gain Selection
+
+Let's experiment now with Information Gain Selection. Making use of the `FSelector` package (or other you choice), rank the features according to their Information Gain and filter those which you consider, according to the IG value.
+
+```{r Information Gain}
+weights<- data.frame(information.gain(left~., training))
+weights$feature <- rownames(weights)
+weights[order(weights$attr_importance, decreasing = TRUE),]
+information_gain_features <- weights$feature[weights$attr_importance > 0.015]
+```
+
+#### Evaluation
+Evaluate the impact of the IG selection in the model performance
+```{r Information Gain Regression Model}
+ig.lm.mod <- train(left ~ ., data = training[append(information_gain_features, "left")],
+               method = "glm", 
+               metric = "Accuracy")
+
+
+ig.lm.mod.pred <- predict(ig.lm.mod, test[,-which(names(test) == "left")])
+
+cm <- confusionMatrix(ig.lm.mod.pred, test$left, positive = "Yes")
+print(cm)
+```
+
+Information gain seems to improve a little bit more the performance of the model. Based on these results, we filter the training and validation set with the Information Gain features.
+
+```{r Information Gain Selection}
+ig_training <- training[append(information_gain_features, "left")]
+ig_test <- test[append(information_gain_features, "left")]
+```
+
+## Wrapper Methods
+
+Let us experiment with Wrapper Methods. In particular, we are going to apply Stepwise Selection Methods to find the best feature combination for this dataset.
+
+### Stepwise
+
+`caret` package provides a useful and easy way of experimenting with stepwise selection: take a look to the `glmStepAIC` method and its parameters (https://stat.ethz.ch/R-manual/R-devel/library/MASS/html/stepAIC.html); you can either use this method directly or in `caret` (`method = 'glmStepAIC'`).
+
+Those methods are using __indirect techniques__ to estimate what will be the error of your fit with the parameters selected, and that approach will always be more speculative than __direct techniques__ based on cross validation. If we can use CV with stepwise, that's a powerful method to select the best possible combination of features. But, that is not working very well in R, since most of the methods take ages to produce results or only work with factors with a maximum of two levels (`regsubsets` or `bestglm`).
+
+Please, refer to these pages to know more about alternatives for doing stepwise selection:
+
+A set of samples with the common packages used to accomplish stepwise selection.
+[Entry #1](https://rstudio-pubs-static.s3.amazonaws.com/2897_9220b21cfc0c43a396ff9abf122bb351.html)
+
+This one covers what is the algorithmic approach to implement a good stepwise selection but using cross-validation, instead of relying on AIC or BIC. Very good if you want to implement your own method.
+[Entry #2](http://freakonometrics.hypotheses.org/19925)
+
+This other is a paper indicating how to overcome the limitations of `bestglm` and is also interesting, though still has the __indirect__-like limitations.
+[Entry #3](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4842399/)
+
+Since our dataset does not have a large set of features, we do not need to make use of any of these methods.
+
+#### Backward Stepwise
+
+Now, it is time to select what is the best possible compromise between the number of predictors and the results obtained.
+Firstly, we try backward stepwise.
+
+```{r Backward Stepwise}
+
+train_control_config_4_stepwise <- trainControl(method = "none", classProbs = TRUE)
+
+backward.lm.mod <- train(left ~ ., data = training, 
+               method = "glmStepAIC", 
+               direction = "backward",
+               trace = FALSE,
+               metric = "Accuracy",
+               trControl=train_control_config_4_stepwise)
+```
+
+Printout only the selected features.
+
+```{r Selected Backward Features}
+paste("Features Selected" ,backward.lm.mod$finalModel$formula[3])
+```
+
+Evaluate the selected model
+```{r Backward Evaluation}
+backward.lm.mod.pred <- predict(backward.lm.mod, test[,-which(names(test) == "left")])
+
+cm <- confusionMatrix(backward.lm.mod.pred, test$left, positive = "Yes")
+print(cm)
+```
+
+#### Forward Stepwise
+
+Try the same with forward stepwise.
+
+```{r Forward Stepwise}
+
+forward.lm.mod <- train(left ~ ., data = training, 
+                                       method = "glmStepAIC", 
+                                       direction = "forward",
+                                       trace=FALSE,
+                                       metric = "Accuracy",
+                        trControl=train_control_config_4_stepwise)
+
+
+```
+
+Printout only the selected features.
+```{r Selected Forward Features}
+paste("Features Selected" ,forward.lm.mod$finalModel$formula[3])
+
+```
+
+Compute the new Accuracy
+
+```{r Forward Evaluation}
+
+forward.lm.mod.pred <- predict(forward.lm.mod, test[,-which(names(test) == "left")])
+
+cm <- confusionMatrix(forward.lm.mod.pred, test$left, positive = "Yes")
+print(cm)
+```
+
+This process is not able to further refine the feature set (more than the refinement already performed by the feature selection process). So, we will take the IG-cleaned training for the following step.
+
+## Embedded
+Finally, we will experiment with embedded methods. 
+
+### Ridge Regression
+
+For this exercise, we are going to make use of the <a href="https://cran.r-project.org/web/packages/glmnet/index.html">`glmnet`</a> library. Take a look to the library and fit a glmnet model making use of `caret` training function for Ridge Regression, using the grid of lambda values provided.
+
+```{r Ridge Regression}
+lambdas <- 10^seq(-2, 1, by = .1)
+
+ridge.mod <- train(left ~ ., data = ig_training, 
+               method = "glmnet", 
+               metric = "Accuracy",
+               tuneGrid = expand.grid(alpha = 0, lambda = lambdas))
+
+plot(ridge.mod$finalModel, xvar = "lambda")
+```
+
+
+
+Select the best lambda form the CV model, use it to predict the target value of the test set and evaluate the results
+```{r Ridge Prediction}
+bestlam <- ridge.mod$bestTune['lambda']
+paste("Best Lambda value from CV=", bestlam)
+ridge.pred= predict(ridge.mod, s=bestlam, ig_test[,-which(names(ig_test) == "left")])
+cm <- confusionMatrix(ridge.pred, ig_test$left, positive = "Yes")
+print(cm)
+```
+
+Ridge Regression offers similar results than unregularized models. If you remember from class, Ridge Regression does not remove any feature, it just forces the coefficients to take small values. 
+
+Rank the variables according to the importance attributed by the model to see this aspect.
+
+```{r Ridge - Variable Importance}
+
+# Print, plot variable importance
+imp <- varImp(ridge.mod$finalModel)
+names <- rownames(imp)[order(imp$Overall, decreasing=TRUE)]
+importance <- imp[names,]
+
+data.frame(row.names = names, importance)
+
+```
+
+### Lasso Regresion
+Let's see if Lasso (which actually removes features by making their coefficients equal to 0) improves the unregularized model.
+
+Using again the <a href="https://cran.r-project.org/web/packages/glmnet/index.html">`glmnet`</a> library and `caret`, fit a Lasso Regression (take a look to the alpha parameter) using the grid of lambda values provided.
+
+```{r Lasso Regression}
+
+lasso.mod <- train(left ~ ., data = ig_training, 
+               method = "glmnet", 
+               metric = "Accuracy",
+               tuneGrid = expand.grid(alpha = 1, lambda = lambdas))
+```
+
+#### Evaluation
+Plotting the different lambda values.
+```{r Lasso Evaluation}
+plot(lasso.mod$finalModel, xvar="lambda")
+```
+
+```{r Lasso Prediction}
+bestlam <- lasso.mod$bestTune['lambda']
+paste("Best Lambda value from CV=", bestlam)
+lasso.pred= predict(lasso.mod, s=bestlam, ig_test[,-which(names(ig_test) == "left")])
+cm <- confusionMatrix(lasso.pred, ig_test$left, positive = "Yes")
+print(cm)
+```
+
+Lasso is able to improve the results achieved by the Information Gain selection by focusing only on a small subset of representative features (nullifying the rest of the coefficients). 
+
+Take a look to the features selected by the lasso model (only those with importance larger than 0)
+```{r Lasso - Variable Importance}
+
+# Print, plot variable importance
+imp <- varImp(lasso.mod$finalModel)
+names <- rownames(imp)[order(imp$Overall, decreasing=TRUE)]
+importance <- imp[names,]
+
+filter(data.frame(names, importance), importance > 0.0)
+```
+
+

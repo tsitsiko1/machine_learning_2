@@ -1,0 +1,291 @@
+---
+title: 'Practice #5: Dimensionality Reduction'
+output:
+  html_document: default
+  html_notebook: default
+---
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(4321)
+
+packages = c("caret", "corrplot", "MASS", "ROCR")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+# Introduction
+
+For this practice we are going to use the Breast Cancer Wisconsin data set from the [*UCI Machine learning repo*](http://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+%28Diagnostic%29) and try to detect whether a breast cancer cell is benign or malignant.
+
+The dataset includes  569 observations and 32 variables measuring the size and shape of cell nuclei. Features are computed from a digitized image of a fine needle aspirate (FNA) of a breast mass.  They describe characteristics of the cell nuclei present in the image.
+
+In more detail, the diagnosis, a categorical variable, is our response variable and the 30 measurement variables, all of which are continuous, are our potential explanatory variables for our model.
+These 30 measurement variables are actually only 10 different features of the nucleus, but with 3 different measurements of each: mean, standard error and the ‘worst’ or largest (mean of the three largest values).
+
+The features included are:
+
+* **radius** - mean of distances from center to points on the perimeter
+* **texture** - standard deviation of gray-scale values
+* **perimeter**
+* **area**
+* **smoothness** - local variation in radius lengths
+* **compactness** - perimeter^2 / area - 1.0
+* **concavity** - severity of concave portions of the contour
+* **concave points** - number of concave portions of the contour
+* **symmetry** 
+* **fractal dimension** - "coastline approximation" - 1
+
+# Data Loading
+
+We load the dataset from the CSV file
+
+```{r}
+original_dataset <- read.csv("data/data.csv")
+dataset = original_dataset
+preprocessParams = preProcess(original_dataset[ ,3:32], method=c("center", "scale", "BoxCox"))
+dataset[, 3:32] <- predict(preprocessParams, original_dataset[, 3:32])
+```
+
+
+Then, we collect all the 30 numeric variables into a matrix
+
+```{r}
+# Collecth the features
+dataset.features <- as.matrix(dataset[,c(3:32)])
+
+# Set the row names
+row.names(dataset.features) <- dataset$id
+
+# Create diagnosis vector
+diagnosis <- as.numeric(dataset$diagnosis == "M")
+
+table(dataset$diagnosis)
+
+```
+
+Well, the target variable is more or less equally distributed, so we do not need any further process in this regard.
+Let's move on to the Principal Component Analysis
+
+## Principal Components Analysis
+
+*Why PCA?*
+We will try to reduce the dimensionality of the dataset by applying PCA. There are thirty variables that can be combined using PCA into different linear combinations that each explain a part of the variance of the model.
+
+If we take a look to the correlation matrix, we can see that there are large correlations between some variables (i.e., we expected that behavior since we have 3 different measures for the same phenomena). Since PCA relies in these correlations, it is reasonable to expect that it is going to be able to find a better representation of the data.
+```{r}
+
+corMatrix <- dataset[,c(3:32)]
+corrplot(cor(corMatrix), type = "upper")
+```
+
+Compute the Principal Components of the dataset (take a look to the `prcomp` function).
+```{r}
+dataset.pr <- prcomp(dataset.features, scale = TRUE, center = TRUE)
+summary(dataset.pr)
+```
+
+Based on the previously computed Principal Components, bi-plot of the two principal components and how they relate to each feature.
+```{r warning=FALSE}
+cex.before <- par("cex")
+par(cex = 0.7)
+biplot(dataset.pr)
+par(cex = cex.before)
+```
+
+Let's see how the target variable is scattered according to the principal components 1 and 2:
+```{r}
+# Scatter plot observations by components 1 and 2
+plot(dataset.pr$x[, c(1, 2)], col = (diagnosis + 1), 
+     xlab = "PC1", ylab = "PC2")
+legend(x="topleft", pch=1, col = c("red", "black"), legend = c("B", "M"))
+```
+
+There is a clear separation of diagnosis (M or B) that is evident in the PC1 vs PC2 plot.
+
+We can extract the eigenvalues from the princomp() function output. The square of the sdev’s gives us the eigen value of each component.
+Based on these eigenvalues, we can calculate the variance explained by each principal component
+```{r}
+
+# Eigenvalues
+dataset.var <- dataset.pr$sdev ^ 2
+
+# Variance explained by each principal component: pve
+pve <- dataset.var/sum(dataset.var)
+
+# Plot variance explained for each principal component
+plot(pve, xlab = "Principal Component", 
+     ylab = "Proportion of Variance Explained", 
+     ylim = c(0, 1), type = "b")
+```
+
+We can also calculate the cumulative proportion explained at each principal component.
+```{r}
+plot(cumsum(pve), xlab = "Principal Component", 
+     ylab = "Cumulative Proportion of Variance Explained", 
+     ylim = c(0, 1), type = "b")
+```
+
+89% of the variation is explained by the first six PC’s. Therefore, for the latter model generation we will use only these six principal components
+
+### Principal Component Selection
+
+Based on the Cumulative Proportion of Variance Explained, decide how many principal components you want to select (i.e., you should choose a small number of PC that can explain most of the variance).
+
+From the princomp() function output object, extract the N-principal components (being N the number of coefficients that you have decided). 
+We are interested in the `rotation` of the first six principal components multiplied by the scaled data, which are called `scores` (basically PC transformed data)
+
+```{r}
+# We select the 6 PCs (which explain the 89% of the variance)
+
+dataset.pcs <- dataset.pr$x[,1:6]
+head(dataset.pcs, 20)
+```
+
+Now, we need to append the target variable `diagnosis` column to this PC transformed data frame . 
+
+```{r}
+dataset.pcst <- dataset.pcs
+dataset.pcst <- cbind(dataset.pcs, diagnosis)
+head(dataset.pcst)
+```
+
+By means of PCA we have transformed the original dataset with more than 30 dimensions to only six principal components. We will now apply a predictive model based on LDA.
+
+## Linear Discriminant Analysis (LDA)
+
+From the principal component’s scatter plots it is evident that there is some clustering of benign and malignant points. This suggests that we could build a linear discriminant function using these principal components. 
+
+### Model building and validation
+
+Split the dataset into training/test data
+
+```{r}
+# Calculate N
+N <- nrow(dataset)
+
+# Create a random number vector
+rvec <- runif(N)
+
+# Select rows from the dataframe
+dataset.pcst.train <- dataset.pcst[rvec < 0.75,]
+dataset.pcst.test <- dataset.pcst[rvec >= 0.75,]
+```
+
+Calculate the linear discriminant function by using the `lda()` function of the `MASS` package. 
+
+```{r}
+dataset.pcst.train.df <- dataset.pcst.train
+
+# convert matrix to a dataframe
+dataset.pcst.train.df <- as.data.frame(dataset.pcst.train)
+
+# Perform LDA on diagnosis
+dataset.lda <- lda(diagnosis ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6, data = dataset.pcst.train.df)
+```
+
+Let’s use this to predict by passing the predict function’s newdata as the testing dataset.
+
+```{r}
+dataset.pcst.test.df <- dataset.pcst.test
+
+# convert matrix to a dataframe
+dataset.pcst.test.df <- as.data.frame(dataset.pcst.test)
+
+# Predict using the computed LDA model
+dataset.lda.predict <- predict(dataset.lda, newdata = dataset.pcst.test.df)
+```
+
+### Model Evaluation using ROC and AUC
+
+Using `ROCR` library, create the ROC and compute the AUC
+```{r message=FALSE, warning=FALSE}
+
+dataset.lda.predict.posteriors <- as.data.frame(dataset.lda.predict$posterior)
+
+# Evaluate the model
+pred <- prediction(dataset.lda.predict.posteriors[,2], dataset.pcst.test.df$diagnosis)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf, colorize = TRUE)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+```
+
+Compute the accuracy of the model
+```{r warning=FALSE}
+mean(dataset.lda.predict$class == dataset.pcst.test.df$diagnosis)
+```
+
+
+### Model Comparison
+
+Compare the PCA-based model to a model including all the features.
+```{r}
+# Train-test splitting
+N <- nrow(dataset)
+rvec <- runif(N)
+dataset.train <- dataset[rvec < 0.75,]
+dataset.test <- dataset[rvec >= 0.75,]
+
+dataset.train.df <- dataset.train
+dataset.train.df <- as.data.frame(dataset.train)
+dataset.test.df <- as.data.frame(dataset.test)
+
+# Perform LDA on diagnosis
+dataset.lda <- lda(diagnosis ~ ., data = dataset.train.df[,-which(names(dataset.train.df) %in% c("X"))])
+dataset.lda.predict <- predict(dataset.lda, newdata = dataset.test.df)
+dataset.lda.predict.posteriors <- as.data.frame(dataset.lda.predict$posterior)
+
+# Evaluate the model
+pred <- prediction(dataset.lda.predict.posteriors[,2], dataset.test.df$diagnosis)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf, colorize = TRUE)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+```
+
+Compute the accuracy of the full model
+```{r}
+mean(dataset.lda.predict$class == dataset.test.df$diagnosis)
+```
+
+Both models performs very similarly (PCA slightly better). However, our PCA model has been created by using only 6 PCs instead of all the features. By using this reduced dimension space we can train smaller model, which are faster to compute and it is going to be less affected by overfitting and, consequently, it is going to generalize better.
+
+
+```{r}
+
+original_dataset <- read.csv("data/data.csv")
+
+train(as.factor(diagnosis) ~ .,
+                  method="lda",
+                  preProcess=c("center", "scale", "BoxCox","pca"), 
+                  metric = "Accuracy",
+                  data=original_dataset[,2:32])
+```
+
+```{r}
+
+train(as.factor(diagnosis) ~ .,
+                  method="lda",
+                  preProcess=c("center", "scale", "BoxCox","pca"), 
+                  metric = "Accuracy",
+                  data=original_dataset[,2:32],
+                  trControl = trainControl(preProcOptions = list(pcaComp=6)))
+
+```
+

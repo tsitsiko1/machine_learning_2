@@ -1,0 +1,387 @@
+---
+title: "Model Evaluation and Selection."
+output:
+  html_document: default
+---
+
+You can see below the solution to the practice. Most of the R code has been put inside functions, so I can call them as many times as I want inside the loop that will do cross-validation. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+packages = c("pROC","caret", "ROCR")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+library(pROC)            # This library makes handling ROC curves a lot easier.
+library(caret)
+library(ROCR)
+numIterations <- 1000
+```
+
+# Data Cleaning part.
+
+This part takes care of reading the file, and put the data in a variable called `df`.
+I decided to convert all the features in the dataset to numeric to simplify the feature selection process.
+```{r}
+readData <- function() {
+  df <- read.csv('data/titanic.csv', sep=';', dec = ",", header=T)
+  df <- df[complete.cases(df),]
+  # http://stackoverflow.com/questions/4605206/drop-data-frame-columns-by-name
+  df <- subset(df, select = -c(ticket,cabin) ) 
+  # I need to convert all factor features to numbers to produce the correlation matrix.
+  # First two functions, applied to each row, substitute the strings by numbers.
+  sexToNum <- function(x) ifelse((x %in% "male"), 1, 2)           
+  embToNum <- function(x) ifelse(x=="C", 1, ifelse(x=="Q", 2, 3)) 
+  df$pclass <- as.numeric(levels(df$pclass))[df$pclass]
+  df$sex <- sexToNum(df$sex)
+  df$embarked <- embToNum(df$embarked)
+  df$age <- as.numeric(df$age)
+  df$fare <- as.numeric(df$fare)
+  df <- df[c("survived","pclass","sex","age","sibsp","parch","fare","embarked")]
+  df
+}
+```
+
+We will also use our function to do the splits (`splitdf`).
+```{r, echo=FALSE}
+splitdf <- function(dataframe, seed=NULL, percentage=0.8) {
+  if (!is.null(seed)) set.seed(seed)
+  index <- 1:nrow(dataframe)
+  numTrainingSamples <- round(length(index) * percentage)
+  trainindex <- sample(index, numTrainingSamples)
+  trainset <- dataframe[trainindex, ]
+  testset <- dataframe[-trainindex, ]
+  list(trainset=trainset,testset=testset)
+}
+```
+
+# Feature Selection Methods
+
+## Feature Selection based on Correlation Matrix.
+
+Here, I tried an easy approach based on selecting the features highly correlated with `survived` from the correlation matrix. 
+```{r}
+easyFeatureSelection <- function(split) {
+  corrs <- abs(cor(split$trainset)[1,])
+  toKeep <- corrs[corrs > 0.1 & !is.na(corrs)]
+  split$trainset <- subset(split$trainset, select=names(toKeep))
+  split$testset <- subset(split$testset, select=names(toKeep))
+  split
+}
+```
+
+The call to `cor(split$trainset)` produces the correlation matrix between all the variables. We're relying on Pearson, as it is not very important for this exercise to check all possible correlation values. I take the `abs()` (absolute value) of the correlation because I want to detect those close to zero, being irrelevant if they're close to 1 or -1. Finally, the `[,1]` selects the first row, as I'm interested in knowing what is the correlation between the first feature (first row in the matrix --survived) and the rest of the features (in the following columns).
+
+# Training & Model Evaluation
+
+Now it's time to train a model. I use the pROC package to produce the ROC curve and to obtain also the optimal threshold (`coords(myROC, "best", ret = "threshold")`). The only requisite to use this package is to put your predictions in the proper format, as you can see when we build the `predictions` dataset. Once that we know the optimal threshold we obtain the confusion matrix, applying the threshold to the predictions on it.
+
+```{r}
+modelEvaluation <- function(split) {
+  # Fit the model with the training dataset.
+  model <- glm(survived~., data = split$trainset, family = "binomial")
+  # The predicted probabilities given to each sample in the test set. Having them
+  # in the form of a dataset to make manipulation easier. 
+  # We put together here 'labels' and 'probabilities'.
+  probs <- predict(model, type="response", newdata = split$testset)
+  predictions <- data.frame(survived = split$testset$survived, pred=probs)
+  # See last answer here:
+  # http://stackoverflow.com/questions/16347507/obtaining-threshold-values-from-a-roc-curve
+  myROC <- roc(survived ~ probs, predictions)   
+  optimalThreshold <- coords(myROC, "best", ret = "threshold")
+  # To compute F1 = 2TP/(2TP+FP+FN)
+  T <- table(predictions$survived, predictions$pred > optimalThreshold$threshold)
+  F1 <- (2*(T[1,1]))/((2*(T[1,1]))+T[2,1]+T[1,2])
+  F1
+}
+```
+
+The confusion matrix `T` is something like:
+```
+    FALSE TRUE
+  0   149   25
+  1    28   60
+```
+where the only thing you need is to access the different elements, indicating their row and column number, to compute the F1 score according to the expression $$F1 = \frac{2TP}{(2TP+FP+FN)}$$
+
+# Solution #1
+
+*Measure how your model results change when using different test sets. To do that, simply start over the process at least 10 times with different splits of the full dataset into training and test. Result might differ, so illustrate that difference in performance*.
+
+Now we only need to iterate _n_ times, so the general process implies to repeat steps 1 to 3, _n_ times:
+
+1. produce a 80-20% split, 
+2. do FS over the split, 
+3. fit a model, and evaluate its performance. 
+  
+and get the maximum performance achieved among the _n_ different results obtained.
+
+```{r, message=FALSE, warning=FALSE}
+df <- readData()
+perf = c(0.0)
+for(i in 1:numIterations) {
+  split <- splitdf(df, i, 0.8)
+  split <- easyFeatureSelection(split)
+  perf[i] <- modelEvaluation(split)
+}
+indexOfMaxPerformance = which.max(perf)
+maxPerf = perf[indexOfMaxPerformance]
+
+indexOfMinPerformance = which.min(perf)
+minPerf = perf[indexOfMinPerformance]
+
+cat("Max performance = ", maxPerf)
+```
+
+### Compare with single split
+
+What would be the performance without iterating over different splits? Lets try:
+
+```{r}
+df <- readData()
+split <- splitdf(df, 43, 0.8)
+split <- easyFeatureSelection(split)
+singleSplitPerformance <- modelEvaluation(split)
+cat("Single split performance = ", singleSplitPerformance)
+```
+
+# Conclusion 
+
+Plot everything together: the performance of the different splits, the max and min performance achieved (in red color), and the performance of a single split (blue color)`.
+
+```{r, echo=FALSE}
+par(pin = c(3,1.8))
+plot(perf, pch=16, cex=1, col=rgb(0,0,1,0.3), 
+     xlab = "Iterations", ylab="Performance", main = "Performance variation")
+abline(h=maxPerf, col="red", lty=2, lwd=2)
+text(x=which.max(perf), y=(maxPerf-0.005), cex=0.9, col="red",
+     format(round(maxPerf, 2), nsmall = 2))
+abline(h=singleSplitPerformance, col="blue", lty=2, lwd=2)
+text(x=which.max(perf), y=(singleSplitPerformance+0.005), cex=0.9, col="blue",
+     format(round(singleSplitPerformance, 2), nsmall = 2))
+abline(h=minPerf, col="red", lty=2, lwd=2)
+text(x=which.min(perf), y=(minPerf+0.005), cex=0.9, col="red",
+     format(round(minPerf, 2), nsmall = 2))
+
+```
+
+Obviously, by increasing the number of iterations, we also expose our model to more heterogeneous datasets, increasing the chance to find a dataset that produces the best possible result.
+
+# Solution #2
+
+*Following with the approach of the previous step, let’s go one step further, and apply cross-validation. This is, train your model against 60% of the data. Use another 20% cross-validation set to select the best possible threshold, and finally, measure the performance of that threshold selection against the remaining 20% test set (yet unseen to the model)*.
+
+We can reuse most of the code that we've already used in the previous step. The only difference in the portion of the full dataset they represent (60% vs 80% for training, for example), and how do we obtain the final performance of the model.
+
+## Changes to dataset split
+
+We must divide the 100% dataset into 60% and 40% to obtaint the 60%-training dataset. We use the same function to perform FS and remove all unnecesary features from the entire dataset before spliting it again into CV and test set.
+
+    split1 <- splitdf(df, i, 0.6)
+    split1 <- easyFeatureSelection(split1)
+    split2 <- splitdf(split1$testset, i*100, 0.5)
+
+As you can see, the first split provides the 60% training in the variable `split1$trainset`. Calling feature selection at this point requires no change, and will produce as output the selection of the best possible features from the correlations observed in the 60% split. From there, we only need to split in half the remaining 40% to obtain the 20% splits for cross validation and test.
+
+## Changes to model evaluation
+
+For the model evaluation part, I decided to modify the previous `modelEvaluation` function to receive as input the three splits, instead of a dataframe with two splits. This new function is called `cv.modelEvaluation`. The only difference is that I compute two different sets of predictions: one is `cv.predictions`, used to determine the optimal threshold, and the other is `test.predictions` used to compute the performance of the model against the test set, using the optimal threshold computed in the previous step.
+
+```{r}
+cv.modelEvaluation <- function(trainset, cvset, testset) {
+  # Train the model with trainset
+  model <- glm(survived~., data = trainset, family = "binomial")
+  # Obtain the optimal THRESHOLD with cross validation set (cvset)
+  probs = predict(model, type="response", newdata = cvset)
+  cv.predictions <- data.frame(survived = cvset$survived, pred=probs)
+  myROC <- roc(survived ~ probs, cv.predictions)   
+  optimalThreshold <- coords(myROC, "best", ret = "threshold")
+  if (length(optimalThreshold) > 1){ # Avoid format errors
+    optimalThreshold <- optimalThreshold[2]
+  }
+  # Compute performance with test set.
+  test.predictions <- data.frame(survived = testset$survived, 
+                                 pred=predict(model, type="response", newdata = testset))
+  T <- table(test.predictions$survived, test.predictions$pred > optimalThreshold$threshold)
+  F1 <- (2*(T[1,1]))/((2*(T[1,1]))+T[2,1]+T[1,2])
+  F1
+}
+```
+
+## The iterative process, all in one.
+
+```{r message=FALSE, warning=FALSE}
+df <- readData()
+cv.perf = c(0.0)
+for(i in 1:numIterations) {
+  split1 <- splitdf(df, i, 0.6)
+  split1 <- easyFeatureSelection(split1)
+  split2 <- splitdf(split1$testset, i*100, 0.5)
+  cv.perf[i] <- cv.modelEvaluation(split1$trainset, split2$trainset, split2$testset)
+}
+indexOfMaxPerformance = which.max(cv.perf)
+maxPerf = cv.perf[indexOfMaxPerformance]
+cat("Max performance = ", maxPerf)
+```
+
+
+To compare the results obtained with two splits vs. the three splits approach, we can use a simple boxplot, for all the perfomance (F1) values obtained.
+
+```{r, echo=FALSE, warning=FALSE}
+boxplot(perf, boxfill="red", las=2, boxwex=0.25, at=0.85, xlim=c(0.5, 1.5), main="comparison 2-splits vs. 3-splits")
+boxplot(cv.perf, boxfill="blue", las=2, boxwex=0.25, at=1.15, add=T)
+axis(side=1,at=c(0.85, 1.15), labels=c("Without CV", "With CV"))
+```
+
+## K-fold Cross Validation
+
+The previous function applied single cross validation, let's modify the code to perform multifold CV.
+
+```{r, message=FALSE, warning=FALSE}
+df <- readData()
+kfold.cv.perf = c(0.0)
+for(i in 1:numIterations) {
+  split1 <- splitdf(df, i, 0.6)
+  split1 <- easyFeatureSelection(split1)
+  
+  #Randomly shuffle the data
+  split1$trainset<-split1$trainset[sample(nrow(split1$trainset)),]
+  
+  #Create 10 equally size folds
+  folds <- cut(seq(1,nrow(split1$trainset)),breaks=10,labels=FALSE)
+  
+  #Perform 10 fold cross validation
+  fold.perf = c(0.0)
+  for(j in 1:10){
+      #Segement your data by fold using the which() function 
+      validationIndexes <- which(folds==j,arr.ind=TRUE)
+      validationData <- split1$trainset[validationIndexes, ]
+      trainData <- split1$trainset[-validationIndexes, ]
+      fold.perf[j] <- cv.modelEvaluation(trainData, validationData, split1$testset)
+  }
+  kfold.cv.perf[i] <- mean(fold.perf)
+}
+
+indexOfMaxPerformance = which.max(kfold.cv.perf)
+maxPerf = kfold.cv.perf[indexOfMaxPerformance]
+cat("Max performance = ", maxPerf)
+```
+
+Now the comparison including the K-fold cross validation.
+
+```{r, echo=FALSE, warning=FALSE}
+boxplot(perf, boxfill="red", las=2, boxwex=0.25, at=0.85, xlim=c(0.5, 1.5), main="comparison 2-splits vs. 3-splits")
+boxplot(cv.perf, boxfill="blue", las=2, boxwex=0.25, at=1.15, add=T)
+boxplot(kfold.cv.perf, boxfill="green", las=2, boxwex=0.25, at=1.45, add=T)
+
+axis(side=1,at=c(0.85, 1.15, 1.45), labels=c("Without CV", "With CV", "With K-fold CV"))
+```
+
+# Solution #3
+
+*Compare different performance measures. We’ve focused so far in ROC curve and TPR vs. FPR, but we can select threshold based on Accuracy, Precission/Recall or even MCC or F1 score. Select one of them and compare your results with those obtained using the ROC curve.*
+
+Using the package ROCR we can access a wide range of metrics. I decided to use the Accuracy, and to do so we can google a little bit to find that to take the optimal value for the threshold we can use a funcion like the one below. Of course you can obtain the best accuracy cutoff by any other mean.
+
+```{r}
+getOptimalThreshold <- function(scores, labels) {
+  preds = prediction(scores, labels)
+  perf = performance(preds, "acc")
+  ind = which.max(slot(perf, "y.values")[[1]] )
+  acc = slot(perf, "y.values")[[1]][ind]
+  optimalThreshold = slot(perf, "x.values")[[1]][ind]
+  optimalThreshold
+}
+```
+
+So, now we should modify our model evaluation function to add this new metric.
+
+```{r}
+cv.modelEvaluation.acc <- function(trainset, cvset, testset) {
+  # Train the model with trainset
+  model <- glm(survived~., data = trainset, family = "binomial")
+  # Obtain the optimal THRESHOLD with cross validation set (cvset)
+  probs = predict(model, type="response", newdata = cvset)
+  cv.predictions <- data.frame(survived = cvset$survived, pred=probs)
+  optimalThreshold <- getOptimalThreshold(probs, cvset$survived)
+  # Compute performance with test set.
+  test.predictions <- data.frame(survived = testset$survived, 
+                                 pred=predict(model, type="response", newdata = testset))
+  T <- table(test.predictions$survived, test.predictions$pred > optimalThreshold)
+  F1 <- (2*(T[1,1]))/((2*(T[1,1]))+T[2,1]+T[1,2])
+  F1
+}
+```
+
+And finallly, we run the entire process again with this new model selection method.
+
+```{r, message=FALSE, warning=FALSE}
+df <- readData()
+cv.perf.acc = c(0.0)
+for(i in 1:numIterations) {
+  split1 <- splitdf(df, i, 0.6)
+  split1 <- easyFeatureSelection(split1)
+  split2 <- splitdf(split1$testset, i*100, 0.5)
+  cv.perf.acc[i] <- cv.modelEvaluation.acc(split1$trainset, split2$trainset, split2$testset)
+}
+indexOfMaxPerformance = which.max(cv.perf.acc)
+maxPerf = cv.perf.acc[indexOfMaxPerformance]
+cat("Max performance = ", maxPerf)
+```
+
+To compare the results obtained with the three different approaches, let's boxplot the performance of each method, for all the perfomance (F1) values obtained.
+
+```{r, warning=FALSE, echo=FALSE}
+boxplot(perf, boxfill="red", las=2, boxwex=0.25, at=0.70, xlim=c(0.5, 1.5), main="comparison 2-splits vs. 3-splits")
+boxplot(cv.perf, boxfill="blue", las=2, boxwex=0.25, at=1.0, add=T)
+boxplot(cv.perf.acc, boxfill="green", las=2, boxwex=0.25, at=1.30, add=T)
+axis(side=1,at=c(0.7, 1.0, 1.3), labels=c("Without CV", "With CV", "With Accuracy"))
+```
+
+
+# Conclusion
+
+First and most important, cross validation helps to produce better models, less prone to overfitting.
+
+Secondly, CV reduces a bit the max performance if compared with the two splits approach. But the reason is easy to understand as you're forcing your model to be evaluated against completely new data and results are completely unexpected. However, these lower performance is more similar to the performance you might expect when you put you model into production.
+
+Metrics are also important: F1 is producing (in general terms) better models than accuracy. As we saw in class, F1 is a more balanced interpretation of the confusion matrix. So it is not unexpected that using "accuracy" we have no guarantees to obtain the best possible model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

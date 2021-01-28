@@ -1,0 +1,425 @@
+---
+title: 'Practice 3: Trees'
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+packages = c("MASS","ISLR", "tree", "randomForest", "gbm", "xgboost", "caret")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+The exercises have been taken from the book "Introduction to Statistical Learning" that you can find at: http://www-bcf.usc.edu/~gareth/ISL/
+
+# Exercise #1
+
+===========
+
+Create a plot displaying the test error resulting from random forests on the Boston data set for a comprehensive range of values for mtry and ntree. The result should look similar to the figure below:
+
+![--](fig8.10.png)
+
+The Boston dataset consists of 506 rows and 14 columns. The goal is to predict the MEDV variable.
+
+- CRIM - per capita crime rate by town
+- ZN - proportion of residential land zoned for lots over 25,000 sq.ft.
+- INDUS - proportion of non-retail business acres per town.
+- CHAS - Charles River dummy variable (1 if tract bounds river; 0 otherwise)
+- NOX - nitric oxides concentration (parts per 10 million)
+- RM - average number of rooms per dwelling
+- AGE - proportion of owner-occupied units built prior to 1940
+- DIS - weighted distances to five Boston employment centres
+- RAD - index of accessibility to radial highways
+- TAX - full-value property-tax rate per $10,000
+- PTRATIO - pupil-teacher ratio by town
+- B - 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town
+- LSTAT - % lower status of the population
+- MEDV - Median value of owner-occupied homes in $1000's
+
+
+
+```{r}
+library(MASS)
+library(tree)
+library(randomForest)
+library(ISLR)
+set.seed (1)
+train = sample(1:nrow(Boston), nrow(Boston)/2)
+tree.boston=tree(medv~., Boston, subset=train)
+summary(tree.boston)
+```
+
+Notice that the output of summary() indicates that only three of the variables have been used in constructing the tree. In the context of a regression tree, the deviance is simply the sum of squared errors for the tree. We now plot the tree.
+```{r}
+plot(tree.boston)
+text(tree.boston ,pretty=0)
+```
+The variable lstat measures the percentage of individuals with lower socioeconomic status. The tree indicates that lower values of lstat correspond to more expensive houses. The tree predicts a median house price of $46,400 for larger homes in suburbs in which residents have high socioeconomic status (rm>=7.437 and lstat<9.715).
+Now we use the cv.tree() function to see whether pruning the tree will improve performance.
+
+```{r}
+cv.boston=cv.tree(tree.boston)
+plot(cv.boston$size ,cv.boston$dev ,type='b', xlab="Tree Size", ylab="Deviance")
+```
+
+In this case, the most complex tree is selected by cross-validation. However, if we wish to prune the tree, we could do so as follows, using the prune.tree() function:
+
+```{r}
+prune.boston=prune.tree(tree.boston ,best=5)
+plot(prune.boston)
+text(prune.boston ,pretty=0)
+```
+
+In keeping with the cross-validation results, we use the unpruned tree to make predictions on the test set.
+```{r}
+yhat=predict(tree.boston, newdata=Boston[-train, ])
+boston.test=Boston[-train, "medv"]
+
+col <- colorRampPalette(c('blue','red'))(10)[as.numeric(cut(abs(yhat - boston.test),breaks = 10))]
+plot(yhat,boston.test, xlab="Predictions", ylab="Actual Values", col = col)
+abline (0, 1)
+mean((yhat - boston.test)^2)
+```
+
+In other words, the test set MSE associated with the regression tree is 25.05. The square root of the MSE is therefore around 5.005, indicating that this model leads to test predictions that are within around $5, 005 of the true median home value for the suburb.
+
+Here we apply bagging and random forests to the Boston data, using the randomForest package in R. Recall that bagging is simply a special case of a random forest with m = p. Therefore, the randomForest() function can random be used to perform both random forests and bagging. We perform bagging Forest() as follows:
+
+```{r}
+library(randomForest)
+set.seed (1)
+bag.boston=randomForest(medv~., data=Boston, subset=train, mtry=13, importance=TRUE)
+bag.boston
+```
+
+The argument mtry=13 indicates that all 13 predictors should be considered for each split of the tree—in other words, that bagging should be done. How well does this bagged model perform on the test set?
+
+```{r}
+yhat.bag = predict(bag.boston, newdata=Boston[-train, ])
+col <- colorRampPalette(c('blue','red'))(10)[as.numeric(cut(abs(yhat.bag - boston.test),breaks = 10))]
+plot(yhat.bag, boston.test,  xlab="Bagging Predictions", ylab="Actual Values", col = col)
+abline (0, 1)
+mean((yhat.bag-boston.test)^2)
+```
+
+The test set MSE associated with the bagged regression tree is 13.16, almost half that obtained using an optimally-pruned single tree. We could change the number of trees grown by randomForest() using the ntree argument:
+
+```{r}
+bag.boston = randomForest(medv~., data=Boston, subset=train, mtry=13, ntree=25)
+yhat.bag = predict(bag.boston ,newdata=Boston[-train, ])
+mean((yhat.bag-boston.test)^2)
+```
+
+Growing a random forest proceeds in exactly the same way, except that we use a smaller value of the mtry argument. By default, randomForest() uses p/3 variables when building a random forest of regression trees, and sqrt(p) variables when building a random forest of classification trees. Here we use mtry = 6.
+
+```{r}
+set.seed (1)
+rf.boston=randomForest(medv~.,data=Boston,subset=train, mtry=6,importance=TRUE)
+yhat.rf = predict(rf.boston ,newdata=Boston[-train ,])
+mean((yhat.rf-boston.test)^2)
+```
+
+Using the importance() function, we can view the *importance* of each variable.
+```{r}
+importance(rf.boston)
+```
+
+Two measures of variable importance are reported. The former is based upon the mean **decrease of accuracy** in predictions on the out of bag samples when a given variable is excluded from the model. The latter is a measure of the total **decrease in node impurity** that results from splits over that variable, averaged over all trees. In the case of regression trees, the node impurity is measured by the training RSS, and for classification trees by the deviance. Plots of these importance measures can be produced using the varImpPlot() function.
+
+```{r}
+varImpPlot (rf.boston)
+```
+
+The results indicate that across all of the trees considered in the random forest, the wealth level of the community (lstat) and the house size (rm) are by far the two most important variables.
+
+So, now it is your turn, and you should work to plot the values of the Mean Squared Error (MSE) over the different trees built by randomForest (i.e., trying different `mtry`values). Before building a loop, think if the `cv.tree` is storing that value for you... (it is!!)
+
+Construct the train and test matrices
+```{r}
+set.seed(1101)
+train = sample(dim(Boston)[1], dim(Boston)[1]/2)
+X.train = Boston[train, -14]
+X.test = Boston[-train, -14]
+Y.train = Boston[train, 14]
+Y.test = Boston[-train, 14]
+```
+
+Call to the `randomForest` method with different values for `mtry`.
+```{r}
+p    = dim(Boston)[2] - 1
+p.2  = p/2
+p.sq = sqrt(p)
+rf.boston.p = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                           mtry = p, ntree = 500)
+rf.boston.p.2 = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                             mtry = p.2, ntree = 500)
+rf.boston.p.sq = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                              mtry = p.sq, ntree = 500)
+```
+
+Plot the values at `$test$mse`.
+```{r}
+plot(1:500, rf.boston.p$test$mse, col = "green", type = "l", xlab = "Number of Trees", 
+     ylab = "Test MSE", ylim = c(10, 19))
+lines(1:500, rf.boston.p.2$test$mse, col = "red", type = "l")
+lines(1:500, rf.boston.p.sq$test$mse, col = "blue", type = "l")
+legend("topright", c("m=p", "m=p/2", "m=sqrt(p)"), col = c("green", "red", "blue"), lty=1)
+```
+
+You can see the results! It seems that the selection of the sqrt(p) is not random.
+
+# Exercise # 2
+
+This problem involves the `OJ` data set which is part of the ISLR package.
+
+0. Load and preview the dataset, to understand what is it about.
+1. Create a training set containing a random sample of 800 observations, and a test set containing the remaining observations.
+2. Fit a tree to the training data, with Purchase as the response and the other variables except for Buy as predictors. Use the summary() function to produce summary statistics about the tree, and describe the results obtained. What is the training error rate? How many terminal nodes does the tree have?
+3. Type in the name of the tree object in order to get a detailed text output. Pick one of the terminal nodes, and interpret the information displayed.
+4. Create a plot of the tree, and interpret the results.
+5. Predict the response on the test data, and produce a confusion matrix comparing the test labels to the predicted test labels. What is the test error rate?
+6. Apply the cv.tree() function to the training set in order to determine the optimal tree size.
+7. Produce a plot with tree size on the x-axis and cross-validated classification error rate on the y-axis.
+8. Which tree size corresponds to the lowest cross-validated classification error rate?
+9. Produce a pruned tree corresponding to the optimal tree size obtained using cross-validation. If cross-validation does not lead to selection of a pruned tree, then create a pruned tree with five terminal nodes.
+10. Compare the training error rates between the pruned and unpruned trees. Which is higher?
+11. Compare the test error rates between the pruned and unpruned trees. Which is higher?
+
+#### 1. Create a training set containing a random sample of 800 observations, and a test set containing the remaining observations.
+
+```{r}
+library(ISLR)
+attach(OJ)
+set.seed(1013)
+
+train = sample(dim(OJ)[1], 800)
+OJ.train = OJ[train, ]
+OJ.test = OJ[-train, ]
+```
+
+#### 2. Fit a tree to the training data, with Purchase as the response and the other variables except for Buy as predictors. Use the summary() function to produce summary statistics about the tree, and describe the results obtained. What is the training error rate? How many terminal nodes does the tree have?
+
+```{r}
+library(tree)
+oj.tree = tree(Purchase ~ ., data = OJ.train)
+summary(oj.tree)
+```
+Two variables are used to build all the decision tree. The missclassification error rate is 15,5%. The tree contains only 7 terminal nodes.
+
+#### 3. Type in the name of the tree object in order to get a detailed text output. Pick one of the terminal nodes, and interpret the information displayed.
+
+```{r}
+oj.tree
+```
+
+For example the last leaf node shown in the listing
+
+    7) LoyalCH > 0.764572 255   90.67 CH ( 0.95686 0.04314 ) *
+
+reads that is based on the split decision over "LoyalCH > 0.76". It contains 255 rows/samples from the training dataset, all of them assigned to the class CH. The deviance is 90.67. The numbers between parenthesis indicate the proportion of elements in the leaf belonging to each class. As this leaf node has been assigned to class "CH" the first number (0.95) represents the ratio of the 255 samples belonging to class and correctly classfied.
+
+#### 4. Create a plot of the tree, and interpret the results.
+
+```{r}
+plot(oj.tree); text(oj.tree, cex=0.75)
+```
+
+
+#### 5. Predict the response on the test data, and produce a confusion matrix comparing the test labels to the predicted test labels. What is the test error rate?
+
+```{r}
+oj.pred = predict(oj.tree, OJ.test, type = "class")
+table(OJ.test$Purchase, oj.pred)
+```
+
+The test error rate is `(32+19)/(32+19+152+67)`, and that is: 18,9%.
+
+#### 6. Apply the cv.tree() function to the training set in order to determine the optimal tree size.
+
+```{r}
+cv.oj = cv.tree(oj.tree, FUN = prune.tree)
+```
+
+
+#### 7. Produce a plot with tree size on the x-axis and cross-validated classification error rate on the y-axis.
+
+By taking a look at the `cv.obj` returned by the `cv.tree` function, we can figure out how to do the plot very easily:
+
+<center>
+![cv.obj object](cvobj.png)
+</center>
+
+There's a `size` and `dev` variables inside representing what is asked in this exercise.
+
+```{r}
+plot(cv.oj$size, cv.oj$dev, type = "b", xlab = "Tree Size", ylab = "Deviance")
+```
+
+#### 8. Which tree size corresponds to the lowest cross-validated classification error rate?
+
+The optimal cv classification error rate is with size 6.
+
+```{r}
+plot(cv.oj$size, cv.oj$dev, type = "b", xlab = "Tree Size", ylab = "Deviance")
+abline(v=6, lty=2, col="red")
+abline(h=cv.oj$dev[2], lty=2, col="red")
+```
+
+#### 9. Produce a pruned tree corresponding to the optimal tree size obtained using cross-validation. If cross-validation does not lead to selection of a pruned tree, then create a pruned tree with five terminal nodes.
+
+```{r}
+oj.pruned = prune.tree(oj.tree, best = 6)
+```
+
+#### 10. Compare the training error rates between the pruned and unpruned trees. Which is higher?
+
+```{r}
+summary(oj.pruned)
+```
+
+Missclassification error rate is exactly the same: 0.155.
+
+#### 11. Compare the test error rates between the pruned and unpruned trees. Which is higher?
+
+```{r}
+pred.unpruned = predict(oj.tree, OJ.test, type = "class")
+misclass.unpruned = sum(OJ.test$Purchase != pred.unpruned)
+misclass.unpruned/length(pred.unpruned)
+```
+
+```{r}
+pred.pruned = predict(oj.pruned, OJ.test, type = "class")
+misclass.pruned = sum(OJ.test$Purchase != pred.pruned)
+misclass.pruned/length(pred.pruned)
+```
+
+Again, pruned and unpruned trees have same test error rate of 0.189.
+
+---
+
+# Bonus Track: Boosting
+
+Boosting over the Boston dataset. The summary() function produces a relative influence plot and also outputs the relative influence statistics.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(1)
+train = sample(1:nrow(Boston), nrow(Boston)/2)
+boston.test=Boston[-train,"medv"]
+boost.boston=gbm(medv~.,data=Boston[train,],distribution="gaussian",n.trees=5000,interaction.depth=4)
+summary(boost.boston)
+```
+
+We see that lstat and rm are by far the most important variables. We can also produce partial dependence plots for these two variables. These plots illustrate the marginal effect of the selected variables on the response after integrating out the other variables. In this case, as we might expect, median house prices are increasing with rm and decreasing with lstat.
+
+```{r}
+par(mfrow=c(1,2))
+plot(boost.boston,i="rm")
+plot(boost.boston,i="lstat")
+```
+
+We now use the boosted model to predict medv on the test set:
+
+```{r}
+yhat.boost=predict(boost.boston,newdata=Boston[-train,],n.trees=5000)
+mean((yhat.boost-boston.test)^2)
+```
+
+The test MSE obtained is 11.8; similar to the test MSE for random forests and superior to that for bagging. If we want to, we can perform boosting with a different value of the shrinkage parameter $\lambda$. The default value is 0.001, but this is easily modified. Here we take $\lambda = 0.2$.
+
+```{r}
+boost.boston=gbm(medv~.,data=Boston[train,],distribution="gaussian",
+                 n.trees=5000,interaction.depth=4,shrinkage=0.2,verbose=F)
+yhat.boost=predict(boost.boston,newdata=Boston[-train,],n.trees=5000)
+mean((yhat.boost-boston.test)^2)
+```
+
+Boosting offers a really good performance on test set. Let's go a step further and apply XGBoost over the dataset to see if we can improve the results.
+
+This code trains a XGBoost tree with default parameters
+```{r}
+train.boston <- Boston[train,]
+test.boston <- Boston[-train,]
+dtrain <- xgb.DMatrix(data = as.matrix(train.boston[!names(train.boston) %in% c("medv")]), label = train.boston$medv)
+xgboost.boston <- xgboost(data = dtrain, max_depth=3, eta = 0.1, nthread=3, nrounds=40, lambda=0, objective="reg:linear")
+```
+
+Predicts the results of the test set with the trained model
+```{r}
+dtest <- as.matrix(test.boston[!names(train.boston) %in% c("medv")])
+yhat.xgboost <- predict(xgboost.boston, dtest)
+
+mean((yhat.xgboost-boston.test)^2)
+
+```
+Result are not very much impressive. We had a better performance with GBM and Random Forest.
+XGBoost is specially sensitive to parameter tuning. 
+
+For instance, the shrinkage value (`eta`) dramatically affects the model performance on the test set.  we use a large value (e.g., 1) the training error is going to decrease (i.e., we are allowing the algorithm to learn the training set very fast).
+```{r}
+xgboost.boston <- xgboost(data = dtrain, max_depth=3, eta = 1, nthread=3, nrounds=40, lambda=0, objective="reg:linear")
+```
+
+
+However, when we try this model over the test set, the error is much larger than the model applying a smaller shrinkage value (i.e., the model has overfitted the training data).
+
+```{r}
+yhat.xgboost <- predict(xgboost.boston, dtest)
+mean((yhat.xgboost-boston.test)^2)
+```
+
+
+We are going to use `caret` to train a set of XGBoost trees using a grid of parameters to obtain the optimal configuration. For more details on these parameters, take a look to the documentation of the `xgboost` library: <https://cran.r-project.org/web/packages/xgboost/xgboost.pdf>
+
+```{r message=FALSE, warning=FALSE}
+
+param_grid <- expand.grid(
+  nrounds = seq(0,250, 5),
+  eta = c(0.01, 0.05, 0.1),
+  subsample = c(0.5,1.0),
+  colsample_bytree = c(0.5,1.0),
+  max_depth = c(3,4,5),
+  gamma = seq(0,1,0.1),
+  min_child_weight = 1
+)
+
+xgb_control <- trainControl(
+  method="cv",
+  number = 5
+)
+
+set.seed(1)
+boston.xgb.tuned <- train(medv~., data=train.boston, trControl=xgb_control, tuneGrid=param_grid,lambda=0, method="xgbTree")
+```
+
+This is the best parameter configuration for this dataset.
+```{r}
+boston.xgb.tuned$bestTune
+
+```
+
+If we use this optimal model, we achieve, by far, the best result.
+XGBoost wins again!
+```{r}
+yhat.xgb.tuned <- predict(boston.xgb.tuned$finalModel,newdata=dtest)
+round(mean((yhat.xgb.tuned - boston.test)^2),2)
+```
+
+XGBoost also allows us to visualize the feature importance.
+```{r}
+importance <- xgb.importance(colnames(Boston[train,]),model=boston.xgb.tuned$finalModel)
+xgb.plot.importance(importance, rel_to_first=TRUE, xlab="Relative Importance")
+
+```
+
+

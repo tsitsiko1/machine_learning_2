@@ -1,0 +1,278 @@
+---
+title: 'Practice 3: Trees'
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+packages = c("MASS","ISLR", "tree", "randomForest","rpart", "rpart.plot")
+
+## Now load or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+library(MASS)
+library(ISLR)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+```
+
+The exercises have been taken from the book "Introduction to Statistical Learning" that you can find at: http://www-bcf.usc.edu/~gareth/ISL/
+
+# Exercise #1
+
+===========
+
+Create a plot displaying the test error resulting from random forests on the Boston data set for a comprehensive range of values for mtry and ntree. The result should look similar to the figure below:
+
+![--](fig8.10.png)
+
+The Boston dataset consists of 506 rows and 14 columns. The goal is to predict the MEDV variable.
+
+- CRIM - per capita crime rate by town
+- ZN - proportion of residential land zoned for lots over 25,000 sq.ft.
+- INDUS - proportion of non-retail business acres per town.
+- CHAS - Charles River dummy variable (1 if tract bounds river; 0 otherwise)
+- NOX - nitric oxides concentration (parts per 10 million)
+- RM - average number of rooms per dwelling
+- AGE - proportion of owner-occupied units built prior to 1940
+- DIS - weighted distances to five Boston employment centres
+- RAD - index of accessibility to radial highways
+- TAX - full-value property-tax rate per $10,000
+- PTRATIO - pupil-teacher ratio by town
+- B - 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town
+- LSTAT - % lower status of the population
+- MEDV - Median value of owner-occupied homes in $1000's
+
+
+
+```{r}
+set.seed (2)
+train = sample(1:nrow(Boston), nrow(Boston)/2)
+tree.boston=rpart(medv~., Boston, subset=train)
+printcp(tree.boston)
+```
+
+Notice that the output of `printcp` function indicates that only four of the variables have been used in constructing the tree. It also shows the CV error related to different values of the complexity parameter (i.e., different pruning values).
+
+```{r}
+rpart.plot(tree.boston)
+```
+The variable `rm` measures the number of rooms (i.e., the size of the house). The tree indicates that larger houses correspond to more expensive houses.
+To really larger houses (rm > 7.4) the tree predict a value of $46K. For smaller houses (rm < 7), the lstat (the percentage of individuals with lower socioeconomic status) is the most important feature to find the value of the house.
+Now we will prune the tree to see if we can improve performance.
+
+```{r}
+plotcp(tree.boston)
+```
+
+The previous figure shows the Cross-Validated Error for different values of the complexity parameter threshold (below the figure) and the size of the tree (above the figure). As expected, the larger the value of the complexity parameter the smaller the tree. The optimal value of the complexity threshold seems to be around 0.022 for a tree with size equal to 6. Let's apply this pruning to create the final model.
+
+```{r}
+prune.boston=prune(tree.boston, cp = 0.022)
+rpart.plot(prune.boston)
+```
+
+In keeping with the cross-validation results, we use the pruned tree to make predictions on the test set.
+
+```{r}
+yhat=predict(prune.boston, newdata=Boston[-train, ])
+boston.test=Boston[-train, "medv"]
+
+col <- colorRampPalette(c('blue','red'))(10)[as.numeric(cut(abs(yhat - boston.test),breaks = 10))]
+plot(yhat,boston.test, xlab="Predictions", ylab="Actual Values", col = col)
+abline (0, 1)
+mean((yhat - boston.test)^2)
+```
+
+In other words, the test set MSE associated with the regression tree is 20.05. The square root of the MSE is therefore around 4.5, indicating that this model leads to test predictions that are within around $4,500 of the true median home value for the suburb.
+
+Here we apply bagging and random forests to the Boston data, using the randomForest package in R. Recall that bagging is simply a special case of a random forest with m = p. Therefore, the randomForest() function can random be used to perform both random forests and bagging. We perform bagging Forest() as follows:
+
+```{r}
+library(randomForest)
+set.seed (1)
+bag.boston=randomForest(medv~., data=Boston, subset=train, mtry=13, importance=TRUE)
+bag.boston
+```
+
+The argument mtry=13 indicates that all 13 predictors should be considered for each split of the tree—in other words, that bagging should be done. How well does this bagged model perform on the test set?
+
+```{r}
+yhat.bag = predict(bag.boston, newdata=Boston[-train, ])
+col <- colorRampPalette(c('blue','red'))(10)[as.numeric(cut(abs(yhat.bag - boston.test),breaks = 10))]
+plot(yhat.bag, boston.test,  xlab="Bagging Predictions", ylab="Actual Values", col = col)
+abline (0, 1)
+mean((yhat.bag-boston.test)^2)
+```
+
+The test set MSE associated with the bagged regression tree is 13.16, almost half that obtained using an optimally-pruned single tree. We could change the number of trees grown by randomForest() using the ntree argument:
+
+```{r}
+bag.boston = randomForest(medv~., data=Boston, subset=train, mtry=13, ntree=25)
+yhat.bag = predict(bag.boston ,newdata=Boston[-train, ])
+mean((yhat.bag-boston.test)^2)
+```
+
+Growing a random forest proceeds in exactly the same way, except that we use a smaller value of the mtry argument. By default, randomForest() uses p/3 variables when building a random forest of regression trees, and sqrt(p) variables when building a random forest of classification trees. Here we use mtry = 6.
+
+```{r}
+set.seed (1)
+rf.boston=randomForest(medv~.,data=Boston,subset=train, mtry=6,importance=TRUE)
+yhat.rf = predict(rf.boston ,newdata=Boston[-train ,])
+mean((yhat.rf-boston.test)^2)
+```
+
+Using the importance() function, we can view the *importance* of each variable.
+```{r}
+importance(rf.boston)
+```
+
+Two measures of variable importance are reported. The former is based upon the mean **decrease of accuracy** in predictions on the out of bag samples when a given variable is excluded from the model. The latter is a measure of the total **decrease in node impurity** that results from splits over that variable, averaged over all trees. In the case of regression trees, the node impurity is measured by the training RSS, and for classification trees by the deviance. Plots of these importance measures can be produced using the varImpPlot() function.
+
+```{r}
+varImpPlot (rf.boston)
+```
+
+The results indicate that across all of the trees considered in the random forest, the wealth level of the community (lstat) and the house size (rm) are by far the two most important variables.
+
+So, now it is your turn, and you should work to plot the values of the Mean Squared Error (MSE) over the different trees built by randomForest (i.e., trying different `mtry`values). Before building a loop, think if the `cv.tree` is storing that value for you... (it is!!)
+
+Construct the train and test matrices
+```{r}
+set.seed(1101)
+train = sample(dim(Boston)[1], dim(Boston)[1]/2)
+X.train = Boston[train, -14]
+X.test = Boston[-train, -14]
+Y.train = Boston[train, 14]
+Y.test = Boston[-train, 14]
+```
+
+Call to the `randomForest` method with different values for `mtry`.
+```{r}
+p    = dim(Boston)[2] - 1
+p.2  = p/2
+p.sq = sqrt(p)
+rf.boston.p = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                           mtry = p, ntree = 500)
+rf.boston.p.2 = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                             mtry = p.2, ntree = 500)
+rf.boston.p.sq = randomForest(X.train, Y.train, xtest = X.test, ytest = Y.test, 
+                              mtry = p.sq, ntree = 500)
+```
+
+Plot the values at `$test$mse`.
+```{r}
+plot(1:500, rf.boston.p$test$mse, col = "green", type = "l", xlab = "Number of Trees", 
+     ylab = "Test MSE", ylim = c(10, 19))
+lines(1:500, rf.boston.p.2$test$mse, col = "red", type = "l")
+lines(1:500, rf.boston.p.sq$test$mse, col = "blue", type = "l")
+legend("topright", c("m=p", "m=p/2", "m=sqrt(p)"), col = c("green", "red", "blue"), lty=1)
+```
+
+You can see the results! It seems that the selection of the sqrt(p) is not random.
+
+# Exercise # 2
+
+This problem involves the `OJ` data set which is part of the ISLR package.
+
+0. Load and preview the dataset, to understand what is it about.
+1. Create a training set containing a random sample of 800 observations, and a test set containing the remaining observations.
+2. Fit a tree to the training data, with Purchase as the response and the other variables except for Buy as predictors. Use the summary() function to produce summary statistics about the tree, and describe the results obtained. What is the training error rate? How many terminal nodes does the tree have?
+3. Type in the name of the tree object in order to get a detailed text output. Pick one of the terminal nodes, and interpret the information displayed.
+4. Create a plot of the tree, and interpret the results.
+5. Predict the response on the test data, and produce a confusion matrix comparing the test labels to the predicted test labels. What is the test error rate?
+6. Apply the cv.tree() function to the training set in order to determine the optimal tree size.
+7. Produce a plot with tree size on the x-axis and cross-validated classification error rate on the y-axis.
+8. Which tree size corresponds to the lowest cross-validated classification error rate?
+9. Produce a pruned tree corresponding to the optimal tree size obtained using cross-validation. If cross-validation does not lead to selection of a pruned tree, then create a pruned tree with five terminal nodes.
+10. Compare the training error rates between the pruned and unpruned trees. Which is higher?
+11. Compare the test error rates between the pruned and unpruned trees. Which is higher?
+
+#### 1. Create a training set containing a random sample of 800 observations, and a test set containing the remaining observations.
+
+```{r}
+library(ISLR)
+attach(OJ)
+set.seed(1013)
+
+train = sample(dim(OJ)[1], 800)
+OJ.train = OJ[train, ]
+OJ.test = OJ[-train, ]
+```
+
+#### 2. Fit a tree to the training data, with Purchase as the response and the other variables except for Buy as predictors. Use the printcp() function to produce summary statistics about the tree.
+
+```{r}
+library(tree)
+oj.tree = rpart(Purchase ~ ., data = OJ.train)
+printcp(oj.tree)
+```
+
+#### 3. Type in the name of the tree object in order to get a detailed text output. Pick one of the terminal nodes, and interpret the information displayed.
+
+```{r}
+oj.tree
+```
+
+For example the last leaf node shown in the listing
+
+    4) LoyalCH>=0.7535455 267  10 CH (0.96254682 0.03745318) *
+
+reads that is based on the split decision over "LoyalCH > 0.7535455". It contains 267 rows/samples from the training dataset, all of them assigned to the class CH. The deviance is 10. The numbers between parenthesis indicate the proportion of elements in the leaf belonging to each class. As this leaf node has been assigned to class "CH" the first number (0.96) represents the ratio of the 267 samples belonging to class and correctly classfied.
+
+#### 4. Create a plot of the tree, and interpret the results.
+
+```{r}
+rpart.plot(oj.tree)
+```
+
+
+#### 5. Predict the response on the test data, and produce a confusion matrix comparing the test labels to the predicted test labels. What is the test error rate?
+
+```{r}
+oj.pred = predict(oj.tree, OJ.test, type = "class")
+table(OJ.test$Purchase, oj.pred)
+```
+
+The test error rate is `(34+16)/(34+16+130+90)`, and that is: 18.5%
+
+#### 6. Apply the plotcp function to the training set in order to determine the optimal tree size.
+
+```{r}
+cv.oj = plotcp(oj.tree)
+```
+
+
+#### 7. Produce a pruned tree corresponding to the optimal tree size obtained using cross-validation. If cross-validation does not lead to selection of a pruned tree, then create a pruned tree with five terminal nodes.
+
+```{r}
+oj.pruned = prune(oj.tree, cp=0.017)
+```
+
+
+#### 8. Compare the test error rates between the pruned and unpruned trees. Which is higher?
+
+```{r}
+pred.unpruned = predict(oj.tree, OJ.test, type = "class")
+misclass.unpruned = sum(OJ.test$Purchase != pred.unpruned)
+misclass.unpruned/length(pred.unpruned)
+```
+
+```{r}
+pred.pruned = predict(oj.pruned, OJ.test, type = "class")
+misclass.pruned = sum(OJ.test$Purchase != pred.pruned)
+misclass.pruned/length(pred.pruned)
+```
+
+Again, pruned and unpruned trees have same test error rate of 0.185.
