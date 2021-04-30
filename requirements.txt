@@ -10,3 +10,4 @@ dtreeviz
 treeinterpreter
 plotly
 xgboost
+graphviz
