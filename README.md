@@ -3,7 +3,10 @@ Repository for the ML2 class of the Big Data and Analytics Master.
 
 In this repository you will find all the technical materials related to this course (notebooks, scripts, files,...).
 
-Please read carefully the following instructions to setup the environment needed for the practices
+Please read carefully the following instructions ([Using the ML2 environment](#using-the-ML2-environment)) to setup the environment needed for the practices if you want to configure your computer to execute the notebooks.
+
+If you prefer to execute them in an online environment, please refer to [Execute the notebooks remotely](#execute-the-notebooks-remotely)
+
 
 # Using the ML2 environment
 
@@ -22,7 +25,7 @@ cd /home/acastellanos/Dropbox/IE/IE_ML/Practice Directory/machine_learning_2
 ```  
 Clone the repository
 ```
-git clone https://github.com/acastellanos-ie/machine_learning_2.git
+git clone https://github.com/acastellanos-ie/ML2-MBD-EN-ABR-2021-A-1.git
 ```
 
 After cloning you should see all the materials in your local folder (and your local folder will be connected to this repo).
@@ -70,7 +73,7 @@ Installing the required libraries in our environment it’s as easy as follows (
 pip install -r requirements.txt
 ```
 
-# Open a Jupyter/JupyterLab session with our current environment
+## Open a Jupyter/JupyterLab session with our current environment
 
 Before opening a Jupyter session, we have to make sure that our environments will be included. In order to solve this, run the following command:
 
@@ -94,3 +97,7 @@ A new tab of your browser will open with the Jupyter session, showing all the av
 Notebooks list.
 
 And now you’re ready to start!
+
+# Execute the notebooks remotely
+
+If you prefer to execute the notebooks remotely, launch an online notebook environment using [![Binder](https://mybinder.org/badge_logo.svg)]()
